@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens (PRD §4). Values are space-separated RGB so Tailwind opacity
+ * modifiers work (e.g. bg-brand-primary/10).
+ *
+ * TODO(open question): the three --brand-* values are PLACEHOLDERS. Replace
+ * them with the hex codes confirmed from bedexdelivery.co.uk / the brand guide.
+ */
+:root {
+  --brand-primary: 0 82 155; /* placeholder */
+  --brand-secondary: 245 130 32; /* placeholder */
+  --brand-dark: 15 23 42; /* placeholder */
+
+  --surface: 247 248 250; /* #F7F8FA */
+  --border: 229 231 235; /* #E5E7EB */
+  --ink: 17 24 39; /* #111827 */
+  --success: 22 163 74; /* #16A34A */
+  --warning: 217 119 6; /* #D97706 */
+  --danger: 220 38 38; /* #DC2626 */
+  --info: 37 99 235; /* #2563EB */
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-surface font-sans text-ink antialiased;
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-primary ring-offset-2;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-brand-primary text-white hover:bg-brand-primary/90;
+  }
+  .btn-secondary {
+    @apply btn border border-border bg-white text-ink hover:bg-surface;
+  }
+  .input {
+    @apply block w-full rounded-md border border-border bg-white px-3 py-2 text-ink placeholder:text-slate-400 focus:border-brand-primary focus:outline-none focus:ring-1 focus:ring-brand-primary;
+  }
+  .label {
+    @apply mb-1 block text-sm font-medium text-ink;
+  }
+  .card {
+    @apply rounded-lg border border-border bg-white;
+  }
+}

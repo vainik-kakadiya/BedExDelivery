@@ -1,0 +1,19 @@
+ALTER TABLE "attempt_photos" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "audit_log" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "customers" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "delivery_attempts" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "depots" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "driver_locations" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "drivers" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "import_jobs" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "import_templates" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "issues" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "order_events" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "order_items" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "orders" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "refresh_tokens" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "route_stops" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "routes" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "settings" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "users" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "vans" ENABLE ROW LEVEL SECURITY;
