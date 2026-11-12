@@ -1,8 +1,10 @@
 import { type OrderStatus, formatTime } from '@bedex/shared';
-import { useQuery } from '@tanstack/react-query';
-import { Navigation, Phone } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { BellRing, Navigation, Phone } from 'lucide-react';
+import { useState } from 'react';
 import { StatusBadge } from '../../components/StatusBadge';
 import { ApiError, api } from '../../lib/api';
+import { useEventStream } from '../../lib/live';
 
 interface DriverStop {
   id: string;
@@ -28,9 +30,50 @@ interface DriverStop {
   };
 }
 
+interface DriverRoute {
+  id: string;
+  name: string;
+  status: string;
+  /** Set when the office edits the route after release (RTE-09). */
+  changedAt: string | null;
+  stops: DriverStop[];
+}
+
 interface TodayResponse {
   date: string;
-  routes: { id: string; name: string; status: string; stops: DriverStop[] }[];
+  routes: DriverRoute[];
+}
+
+/** RTE-09: highlight office edits until the driver acknowledges them (remembered per device). */
+function ChangedBanner({ route }: { route: DriverRoute }) {
+  const key = `bedex.routeSeen.${route.id}`;
+  const [seen, setSeen] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  });
+  if (!route.changedAt || (seen && seen >= route.changedAt)) return null;
+  const acknowledge = () => {
+    try {
+      localStorage.setItem(key, route.changedAt!);
+    } catch {
+      // Private mode etc.: the banner just returns next time.
+    }
+    setSeen(route.changedAt);
+  };
+  return (
+    <div role="alert" className="mb-3 flex items-center justify-between gap-3 rounded-lg bg-info px-4 py-3 text-white">
+      <span className="flex items-center gap-2 font-medium">
+        <BellRing className="h-5 w-5 shrink-0" aria-hidden />
+        The office changed this route at {etaFormat.format(new Date(route.changedAt))}. Check your stops.
+      </span>
+      <button type="button" onClick={acknowledge} className="min-h-tap shrink-0 rounded-md bg-white/20 px-3 font-semibold">
+        Got it
+      </button>
+    </div>
+  );
 }
 
 const etaFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit' });
@@ -42,7 +85,10 @@ function navigateUrl(o: DriverStop['order']): string {
 
 /** DRP-02: today's ordered stops. Stop detail + completion flow arrive in weeks 4–5. */
 export function TodayPage() {
+  const queryClient = useQueryClient();
   const today = useQuery({ queryKey: ['driver', 'today'], queryFn: () => api<TodayResponse>('/driver/routes/today') });
+  // DRV-05 / RTE-09: office changes appear instantly.
+  useEventStream('/driver/stream', () => void queryClient.invalidateQueries({ queryKey: ['driver', 'today'] }));
 
   if (today.isPending) return <p className="text-slate-500">Loading today's route…</p>;
   if (today.isError) {
@@ -65,6 +111,7 @@ export function TodayPage() {
     <div className="space-y-6">
       {today.data.routes.map((route) => (
         <section key={route.id}>
+          <ChangedBanner route={route} />
           <h1 className="mb-3 text-lg font-semibold">
             {route.name} <span className="font-normal text-slate-500">· {route.stops.length} stops</span>
           </h1>

@@ -19,6 +19,14 @@ export function relativeTime(iso: string, now: number): string {
   return londonDateTime(iso);
 }
 
+/** 205 → "3 h 25 min", 45 → "45 min". */
+export function formatMinutes(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined) return '–';
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  return h ? `${h} h ${m.toString().padStart(2, '0')} min` : `${m} min`;
+}
+
 /** Add days to a YYYY-MM-DD date. */
 export function addDays(isoDate: string, days: number): string {
   const d = new Date(`${isoDate}T12:00:00Z`);

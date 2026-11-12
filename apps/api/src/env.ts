@@ -1,10 +1,18 @@
 import { z } from 'zod';
 
+/** Empty strings in .env mean "not set". */
+const optional = z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().default(4000),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   DATABASE_URL: z.string().url(),
+  /**
+   * Connections per API process. Supabase's session pooler caps *all* clients
+   * (pool_size, 15 on small plans), so keep this × processes well below it.
+   */
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(5),
   JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
   CORS_ORIGIN: z
     .string()
@@ -20,6 +28,11 @@ const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true'),
   TRUST_PROXY: z.coerce.number().int().min(0).default(1),
+  // Google Maps Platform (all optional: the planner falls back to estimates).
+  GOOGLE_MAPS_SERVER_KEY: optional,
+  GOOGLE_CLOUD_PROJECT_ID: optional,
+  /** Service account JSON (raw or base64) for the Route Optimization API, which needs OAuth. */
+  GOOGLE_SERVICE_ACCOUNT_JSON: optional,
 });
 
 export type Env = z.infer<typeof envSchema>;

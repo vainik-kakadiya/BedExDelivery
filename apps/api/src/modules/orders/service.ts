@@ -325,6 +325,8 @@ export interface TransitionOptions {
   scheduledDate?: string | null;
   routeId?: string | null;
   payload?: Record<string, unknown>;
+  /** Extra columns to set in the same update (e.g. the route an order is planned onto). */
+  patch?: OrderPatch;
 }
 
 /**
@@ -341,7 +343,7 @@ export async function transitionOrder(
   const check = checkTransition(order.status, to, actor.role);
   if (!check.ok) throw conflict('INVALID_TRANSITION', check.reason, { from: order.status, to });
 
-  const patch: OrderPatch = { status: to };
+  const patch: OrderPatch = { ...opts.patch, status: to };
   if (to === 'cancelled') patch.cancelReason = opts.reason ?? null;
   if (check.reopen) patch.cancelReason = null;
   if (to === 'awaiting_scheduling') patch.scheduledDate = null;
@@ -384,7 +386,7 @@ export async function transitionOrder(
   return updated;
 }
 
-async function lockOrder(tx: Tx, id: string): Promise<OrderRow> {
+export async function lockOrder(tx: Tx, id: string): Promise<OrderRow> {
   const [order] = await tx.select().from(orders).where(eq(orders.id, id)).for('update');
   if (!order) throw notFound('Order not found');
   return order;

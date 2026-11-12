@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
-import { Placeholder } from './components/Placeholder';
 import { FullPageSpinner, RequireRole } from './components/RequireRole';
 import { DriverLayout } from './layouts/DriverLayout';
 import { OfficeLayout } from './layouts/OfficeLayout';
@@ -8,8 +7,13 @@ import { homePathFor, restoreSession } from './lib/api';
 import { LoginPage } from './pages/LoginPage';
 import { TrackPage } from './pages/TrackPage';
 import { TodayPage } from './pages/driver/TodayPage';
+import { DepotsPage } from './pages/office/DepotsPage';
 import { OrdersPage } from './pages/office/OrdersPage';
+import { SettingsPage } from './pages/office/SettingsPage';
 import { DashboardPage } from './pages/office/dashboard/DashboardPage';
+import { DriversPage } from './pages/office/fleet/DriversPage';
+import { VansPage } from './pages/office/fleet/VansPage';
+import { PlannerPage } from './pages/office/planner/PlannerPage';
 import { useAuth } from './stores/auth';
 
 export function App() {
@@ -33,11 +37,11 @@ export function App() {
       >
         <Route index element={<DashboardPage />} />
         <Route path="orders" element={<OrdersPage />} />
-        <Route path="planner" element={<Placeholder title="Route planner" requirements="RTE-01 – RTE-10" milestone="weeks 4–5" />} />
-        <Route path="drivers" element={<Placeholder title="Drivers" requirements="DRV-01, DRV-03 – DRV-05" milestone="weeks 2–3" />} />
-        <Route path="vans" element={<Placeholder title="Vans" requirements="DRV-02" milestone="weeks 2–3" />} />
-        <Route path="depots" element={<Placeholder title="Depots" requirements="RTE-02" milestone="weeks 2–3" />} />
-        <Route path="settings" element={<Placeholder title="Settings" requirements="ACC-01, TRK-03/04 toggles" milestone="weeks 2–3" />} />
+        <Route path="planner" element={<PlannerPage />} />
+        <Route path="drivers" element={<DriversPage />} />
+        <Route path="vans" element={<VansPage />} />
+        <Route path="depots" element={<DepotsPage />} />
+        <Route path="settings" element={<SettingsPage />} />
       </Route>
 
       <Route

@@ -65,11 +65,43 @@ packages/
   - Realtime updates: Postgres statement-level triggers `NOTIFY bedex_changes`, the API `LISTEN`s and pushes Server-Sent Events, and the browser refetches the affected data. The browser never connects to Supabase directly. If the stream drops, the dashboard polls every 10 s.
   - ETA drift is measured against the planned ETAs; it becomes live once Routes API recalculation (RTE-07) lands.
 
-**Not started.** Screens are routed with placeholders that name their requirement IDs.
+- **Route planner (RTE-01 – RTE-10)** at `/office/planner`. Depots (admin) and Settings pages included.
+  - Pick a date. Eligible orders are listed: awaiting/in warehouse (undated or due), and rescheduled to that day or overdue.
+  - Tick the drivers and vans working that day, then **Optimise**. This runs as an async job with progress and replaces that day's drafts.
+  - Edits: drag stops to reorder or move them between routes; drag to *Unassigned* to remove. Arrow and × buttons do the same from the keyboard. Each edit recalculates ETAs, miles and durations. *Re-optimise* reorders a single route.
+  - Warnings: over capacity (units/kg/m³), ETA outside window, over working hours, missing geocode, no driver/van.
+  - Route states: Draft ⇄ Released. Editing a released route sets `changed_at`, logs `route_changed` / `route_resequenced` / `route_reassigned` in order history, and the driver app refreshes live with a "route changed" banner.
+  - Orders on a route are *Scheduled*. Taking one off restores *Rescheduled* (keeping its date) or *Awaiting scheduling*.
+  - Drivers and vans already on a released route that day are not double-booked.
+
+### Routing engines
+
+`apps/api/src/modules/planning/engine` picks the best provider for each job:
+
+| Configured | Optimisation (RTE-04) | Travel times / ETAs (RTE-07) |
+|---|---|---|
+| `GOOGLE_SERVICE_ACCOUNT_JSON` + `GOOGLE_CLOUD_PROJECT_ID` | Route Optimization API `optimizeTours` | – |
+| `GOOGLE_MAPS_SERVER_KEY` | – | Routes API `computeRoutes` (≤25 waypoints per call, stitched) |
+| nothing | built-in: cheapest insertion + relocate/2-opt | straight line × 1.35 at 24 km/h + 2 min parking |
+
+Estimated routes are labelled **Estimated** in the UI and drawn as dashed straight lines.
+- The Google request/response mapping is unit-tested against the documented formats, but it has **not been run against Google yet**.
+- The Route Optimization API rejects API keys and needs a service account.
+- If a Routes API call fails, it falls back to estimates and logs a warning.
+
+- **Drivers & vans (DRV-01 – DRV-05).** `/office/drivers` and `/office/vans`. Creating and editing drivers (including their logins) and vans is admin-only, per PRD §2; office staff can view both and reassign.
+  - **Drivers:** login by email and/or mobile, working hours, max hours, default van, optional home location. Deactivating a driver revokes their sessions and blocks sign-in; their history is kept. A password reset also signs them out.
+  - **Vans:** registration (unique, ignoring spaces) and capacity in units/kg/m³.
+  - **Busy drivers and vans:** neither can be deactivated while on a released or in-progress route.
+  - **Progress (DRV-04):** each driver's route for the day, stops done/total, current stop with ETA, and last GPS ping. Updates live.
+  - **Reassignment (DRV-05):** whole route → another driver/van (`PATCH /routes/:id`), or individual outstanding stops → another route on the same day, including from a route already on the road (`POST /routes/:id/stops/transfer`). Completed stops can't move, and stops already out for delivery can't move onto a draft. Both drivers' apps refresh; each order's history records `route_changed` with the from/to drivers.
+  - **In-progress ETAs:** recalculation only re-times outstanding stops, from the last completed stop, starting now.
+
+**Not started.**
 - Order create/edit UI, import with column mapping and duplicate detection (ORD-05/06), geocoding (ORD-07), Shopify (ORD-08)
-- Drivers, vans, depots, users and settings CRUD
-- Route planner and Google Route Optimization / Routes API (RTE-*)
-- Driver stop completion, photo upload, IndexedDB offline queue, GPS (DRP-04…09)
+- Office/admin user management (ACC-01)
+- Driver start/complete route and stops, photo upload, IndexedDB offline queue, GPS (DRP-03…09). These move routes to *In progress* / *Completed* (the rest of RTE-09).
+- Optimisation jobs live in memory: a single API process (PM2 fork mode) is fine; several processes would need BullMQ/Redis.
 - Audit-log viewer and data migration (ACC-03 viewer, ACC-05)
 - Postgres RLS as the second layer for driver data (ACC-02). Today the API layer enforces it.
 

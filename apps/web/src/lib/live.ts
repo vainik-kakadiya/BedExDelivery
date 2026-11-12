@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { create } from 'zustand';
 import { request } from './api';
 
@@ -16,24 +16,18 @@ export const FALLBACK_POLL_MS = 10_000;
 const RECONNECT_MS = 3_000;
 
 /**
- * DSH-07: keep one Server-Sent Events connection open while the office app is
- * mounted and refetch affected queries when the database changes. Uses fetch
- * (not EventSource) so the bearer token goes in a header, not the URL.
+ * Keep a Server-Sent Events connection open and call `onChange` with the
+ * tables that changed ('*' after (re)connecting, to catch up). Uses fetch,
+ * not EventSource, so the bearer token goes in a header rather than the URL.
  */
-export function useLiveUpdates(): void {
-  const queryClient = useQueryClient();
-  const setStatus = useLiveStatus((s) => s.set);
+export function useEventStream(path: string, onChange: (tables: string[]) => void, onStatus?: (s: LiveStatus) => void): void {
+  const handlers = useRef({ onChange, onStatus });
+  handlers.current = { onChange, onStatus };
 
   useEffect(() => {
     let stopped = false;
     let controller: AbortController | null = null;
-
-    const invalidate = (tables: string[]) => {
-      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      if (tables.some((t) => t === '*' || t === 'orders' || t === 'delivery_attempts' || t === 'route_stops')) {
-        void queryClient.invalidateQueries({ queryKey: ['orders'] });
-      }
-    };
+    const status = (s: LiveStatus) => handlers.current.onStatus?.(s);
 
     const handleEvent = (raw: string) => {
       let event = 'message';
@@ -43,13 +37,13 @@ export function useLiveUpdates(): void {
         else if (line.startsWith('data:')) data += line.slice(5).trim();
       }
       if (event === 'ready') {
-        setStatus('live');
-        invalidate(['*']); // catch up on anything missed while disconnected
+        status('live');
+        handlers.current.onChange(['*']);
       } else if (event === 'change') {
         try {
-          invalidate((JSON.parse(data) as { tables: string[] }).tables);
+          handlers.current.onChange((JSON.parse(data) as { tables: string[] }).tables);
         } catch {
-          invalidate(['*']);
+          handlers.current.onChange(['*']);
         }
       }
     };
@@ -58,10 +52,7 @@ export function useLiveUpdates(): void {
       while (!stopped) {
         controller = new AbortController();
         try {
-          const res = await request('/dashboard/stream', {
-            headers: { Accept: 'text/event-stream' },
-            signal: controller.signal,
-          });
+          const res = await request(path, { headers: { Accept: 'text/event-stream' }, signal: controller.signal });
           if (!res.body) throw new Error('Streaming not supported');
           const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
           let buffer = '';
@@ -76,11 +67,11 @@ export function useLiveUpdates(): void {
             }
           }
           // Server closed the stream (token lifetime reached): reconnect straight away.
-          if (!stopped) setStatus('connecting');
+          if (!stopped) status('connecting');
           continue;
         } catch {
           if (stopped) return;
-          setStatus('offline');
+          status('offline');
         }
         await new Promise((r) => setTimeout(r, RECONNECT_MS));
       }
@@ -91,5 +82,25 @@ export function useLiveUpdates(): void {
       stopped = true;
       controller?.abort();
     };
-  }, [queryClient, setStatus]);
+  }, [path]);
+}
+
+const touches = (tables: string[], ...names: string[]) => tables.some((t) => t === '*' || names.includes(t));
+
+/** DSH-07 / RTE-09: office-wide live updates (dashboard, orders, planner). */
+export function useLiveUpdates(): void {
+  const queryClient = useQueryClient();
+  const setStatus = useLiveStatus((s) => s.set);
+  useEventStream(
+    '/dashboard/stream',
+    (tables) => {
+      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      if (touches(tables, 'orders', 'delivery_attempts', 'route_stops')) void queryClient.invalidateQueries({ queryKey: ['orders'] });
+      if (touches(tables, 'orders', 'routes', 'route_stops')) void queryClient.invalidateQueries({ queryKey: ['planner'] });
+      if (touches(tables, 'orders', 'routes', 'route_stops', 'driver_locations', 'delivery_attempts')) {
+        void queryClient.invalidateQueries({ queryKey: ['fleet'] });
+      }
+    },
+    setStatus,
+  );
 }

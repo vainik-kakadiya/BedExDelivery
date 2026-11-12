@@ -11,8 +11,11 @@ import { dashboardRouter } from './modules/dashboard/router';
 import { driverRouter } from './modules/driver/router';
 import { exportsRouter } from './modules/exports/router';
 import { healthRouter } from './modules/health';
-import { driversRouter, routesRouter } from './modules/lookups';
+import { depotsRouter } from './modules/depots/router';
+import { driversRouter, vansRouter } from './modules/fleet/router';
 import { ordersRouter } from './modules/orders/router';
+import { routesRouter } from './modules/planning/router';
+import { settingsRouter } from './modules/settings/router';
 import { publicRouter } from './modules/public/router';
 
 export function createApp(ctx: AppContext, options: { logger?: Logger } = {}) {
@@ -41,7 +44,10 @@ export function createApp(ctx: AppContext, options: { logger?: Logger } = {}) {
   v1.use('/auth', authRouter(ctx));
   v1.use('/orders', ordersRouter(ctx));
   v1.use('/drivers', driversRouter(ctx));
+  v1.use('/vans', vansRouter(ctx));
   v1.use('/routes', routesRouter(ctx));
+  v1.use('/depots', depotsRouter(ctx));
+  v1.use('/settings', settingsRouter(ctx));
   v1.use('/dashboard', dashboardRouter(ctx));
   v1.use('/exports', exportsRouter(ctx));
   v1.use('/driver', driverRouter(ctx));

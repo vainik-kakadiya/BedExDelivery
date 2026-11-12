@@ -6,12 +6,14 @@ import { createApp } from './app';
 import type { Env } from './env';
 import { ChangeFeed } from './lib/changeFeed';
 import { type AuthUser, signAccessToken } from './lib/jwt';
+import { createRoutingEngine } from './modules/planning/engine';
 
 const env: Env = {
   NODE_ENV: 'test',
   PORT: 0,
   LOG_LEVEL: 'silent',
   DATABASE_URL: 'postgres://unused',
+  DATABASE_POOL_MAX: 1,
   JWT_ACCESS_SECRET: 'test-secret-that-is-definitely-long-enough',
   CORS_ORIGIN: ['http://localhost:5173'],
   COOKIE_SECURE: true,
@@ -28,7 +30,9 @@ const untouchableDb = new Proxy(
   },
 ) as unknown as Db;
 
-const makeApp = () => createApp({ db: untouchableDb, env, changes: new ChangeFeed() }, { logger: pino({ level: 'silent' }) });
+const routing = createRoutingEngine({});
+const makeApp = () =>
+  createApp({ db: untouchableDb, env, changes: new ChangeFeed(), routing }, { logger: pino({ level: 'silent' }) });
 
 const office: AuthUser = { id: '00000000-0000-4000-8000-000000000001', role: 'office', driverId: null };
 const driver: AuthUser = {
@@ -90,6 +94,10 @@ describe('auth & RBAC', () => {
 describe('dashboard & exports RBAC', () => {
   const app = makeApp();
   const officeOnly = [
+    '/api/v1/routes/plan?date=2026-11-12',
+    '/api/v1/routes/optimise/00000000-0000-4000-8000-000000000009',
+    '/api/v1/depots',
+    '/api/v1/settings',
     '/api/v1/dashboard/summary',
     '/api/v1/dashboard/live',
     '/api/v1/dashboard/stream',
@@ -108,6 +116,62 @@ describe('dashboard & exports RBAC', () => {
     expect((await request(app).get(path).set('Authorization', await bearer(driver))).status).toBe(403);
   });
 
+  it('lets only admins change depots, settings, drivers and vans', async () => {
+    const asOffice = await bearer(office);
+    const id = '00000000-0000-4000-8000-000000000009';
+    for (const [method, path] of [
+      ['patch', '/api/v1/settings'],
+      ['post', '/api/v1/depots'],
+      ['post', '/api/v1/drivers'],
+      ['patch', `/api/v1/drivers/${id}`],
+      ['post', '/api/v1/vans'],
+      ['patch', `/api/v1/vans/${id}`],
+    ] as const) {
+      expect((await request(app)[method](path).set('Authorization', asOffice).send({})).status, `${method} ${path}`).toBe(403);
+    }
+  });
+
+  it('keeps drivers out of the fleet pages and stop transfers', async () => {
+    const asDriver = await bearer(driver);
+    for (const path of ['/api/v1/drivers', '/api/v1/drivers/progress', '/api/v1/vans']) {
+      expect((await request(app).get(path).set('Authorization', asDriver)).status, path).toBe(403);
+    }
+    const res = await request(app)
+      .post('/api/v1/routes/00000000-0000-4000-8000-000000000009/stops/transfer')
+      .set('Authorization', asDriver)
+      .send({});
+    expect(res.status).toBe(403);
+  });
+
+  it('validates a new driver before touching the database', async () => {
+    const admin = await bearer({ ...office, role: 'admin' });
+    const res = await request(app).post('/api/v1/drivers').set('Authorization', admin).send({ name: 'X', password: 'short' });
+    expect(res.status).toBe(400);
+    expect(Object.keys(res.body.details.fieldErrors)).toEqual(expect.arrayContaining(['password', 'workStart', 'workEnd']));
+  });
+
+  it('forbids drivers from planner actions', async () => {
+    const asDriver = await bearer(driver);
+    const id = '00000000-0000-4000-8000-000000000009';
+    for (const [method, path] of [
+      ['post', '/api/v1/routes/optimise'],
+      ['put', `/api/v1/routes/${id}/stops`],
+      ['post', `/api/v1/routes/${id}/release`],
+      ['delete', `/api/v1/routes/${id}`],
+    ] as const) {
+      expect((await request(app)[method](path).set('Authorization', asDriver).send({})).status, `${method} ${path}`).toBe(403);
+    }
+  });
+
+  it('validates optimise requests before touching the database', async () => {
+    const res = await request(app)
+      .post('/api/v1/routes/optimise')
+      .set('Authorization', await bearer(office))
+      .send({ date: '2026-11-12', depotId: 'x', endType: 'moon', vehicles: [] });
+    expect(res.status).toBe(400);
+    expect(Object.keys(res.body.details.fieldErrors).sort()).toEqual(['depotId', 'endType', 'vehicles']);
+  });
+
   it('validates export parameters before touching the database', async () => {
     const res = await request(app)
       .get('/api/v1/exports/deliveries?from=2026-11-12&to=2026-11-01&format=docx')
@@ -120,7 +184,7 @@ describe('dashboard & exports RBAC', () => {
 describe('dashboard stream (DSH-07)', () => {
   it('pushes coalesced change events to connected office users', async () => {
     const changes = new ChangeFeed(5);
-    const app = createApp({ db: untouchableDb, env, changes }, { logger: pino({ level: 'silent' }) });
+    const app = createApp({ db: untouchableDb, env, changes, routing }, { logger: pino({ level: 'silent' }) });
     const server = app.listen(0);
     try {
       const { port } = server.address() as { port: number };

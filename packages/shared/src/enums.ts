@@ -15,6 +15,12 @@ export type GeocodeStatus = (typeof GEOCODE_STATUSES)[number];
 export const ROUTE_END_TYPES = ['depot', 'driver_home', 'last_stop'] as const;
 export type RouteEndType = (typeof ROUTE_END_TYPES)[number];
 
+export const ROUTE_END_TYPE_LABELS: Record<RouteEndType, string> = {
+  depot: 'Return to depot',
+  driver_home: "Driver's home",
+  last_stop: 'Last stop',
+};
+
 export const ATTEMPT_OUTCOMES = ['delivered', 'partial', 'failed'] as const;
 export type AttemptOutcome = (typeof ATTEMPT_OUTCOMES)[number];
 

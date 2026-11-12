@@ -29,6 +29,13 @@
       "when": 1794463519715,
       "tag": "0003_change_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794464942424,
+      "tag": "0004_route_planning",
+      "breakpoints": true
     }
   ]
 }

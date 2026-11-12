@@ -14,10 +14,14 @@ import { type OrderFilters, orderFilterConditions } from '../orders/service';
 
 const MAX_EXPORT_ROWS = 50_000;
 
-/** "2× King bed frame; 1× Mattress" */
+/**
+ * "2× King bed frame; 1× Mattress". The outer id is written out table-qualified:
+ * in single-table selects Drizzle renders ${orders.id} as a bare "id", which here
+ * would bind to order_items.id and silently return nothing.
+ */
 const itemsSummary = sql<string | null>`(
   select string_agg(oi.qty || '× ' || oi.name, '; ' order by oi.name)
-  from order_items oi where oi.order_id = ${orders.id}
+  from order_items oi where oi.order_id = "orders"."id"
 )`;
 
 const window = (from: string | null, to: string | null) => (from && to ? `${formatTime(from)}–${formatTime(to)}` : '');

@@ -1,4 +1,4 @@
-import type { AttemptOutcome, FailureReason, OrderSource, Role } from './enums';
+import type { AttemptOutcome, FailureReason, OrderSource, Role, RouteEndType } from './enums';
 import type { OrderStatus, RouteStatus } from './status';
 
 /** Error envelope returned by every API error (PRD §8). */
@@ -126,12 +126,216 @@ export interface DriverOption {
   active: boolean;
 }
 
+/** DRV-01. Superset of DriverOption, so the same endpoint feeds filters. */
+export interface DriverDto extends DriverOption {
+  userId: string;
+  email: string | null;
+  phone: string | null;
+  workStart: string;
+  workEnd: string;
+  maxHours: number;
+  defaultVanId: string | null;
+  defaultVanName: string | null;
+  homeAddress: string | null;
+  homePostcode: string | null;
+  homeLat: number | null;
+  homeLng: number | null;
+  lastLoginAt: string | null;
+}
+
+/** DRV-02. */
+export interface VanDto {
+  id: string;
+  registration: string;
+  name: string;
+  capacityUnits: number;
+  capacityKg: number | null;
+  capacityM3: number | null;
+  active: boolean;
+  /** Drivers who use this van by default. */
+  defaultFor: string[];
+}
+
+/** DRV-04: one driver's day. */
+export interface DriverProgressStop {
+  stopId: string;
+  sequence: number;
+  orderId: string;
+  orderNumber: string;
+  customerName: string;
+  postcode: string;
+  status: OrderStatus;
+  eta: string | null;
+  completedAt: string | null;
+}
+
+export interface DriverProgressRoute {
+  routeId: string;
+  name: string;
+  status: RouteStatus;
+  vanId: string | null;
+  vanName: string | null;
+  stopsTotal: number;
+  stopsCompleted: number;
+  /** First stop not yet completed (the one the driver is heading to). */
+  currentStop: DriverProgressStop | null;
+  stops: DriverProgressStop[];
+}
+
+export interface DriverProgress {
+  driverId: string;
+  name: string;
+  active: boolean;
+  routes: DriverProgressRoute[];
+  lastLocation: { lat: number; lng: number; recordedAt: string } | null;
+}
+
 export interface RouteOption {
   id: string;
   name: string;
   date: string;
   status: RouteStatus;
   driverId: string | null;
+}
+
+// ---------- depots & route planning (RTE-*) ----------
+
+export interface Depot {
+  id: string;
+  name: string;
+  address: string;
+  postcode: string;
+  lat: number;
+  lng: number;
+  isDefault: boolean;
+  active: boolean;
+}
+
+export type RoutingEngineKind = 'google' | 'estimate';
+
+export interface PlannerOrder {
+  id: string;
+  orderNumber: string;
+  customerName: string;
+  addressLine1: string;
+  town: string;
+  postcode: string;
+  lat: number | null;
+  lng: number | null;
+  status: OrderStatus;
+  scheduledDate: string | null;
+  timeWindowStart: string | null;
+  timeWindowEnd: string | null;
+  /** Base + extra minutes. */
+  serviceMinutes: number;
+  loadUnits: number;
+  loadKg: number;
+  loadM3: number;
+}
+
+export interface PlannerStop {
+  id: string;
+  sequence: number;
+  eta: string | null;
+  etaWindowOk: boolean | null;
+  order: PlannerOrder;
+}
+
+export type RouteWarningCode =
+  | 'over_capacity'
+  | 'outside_window'
+  | 'over_hours'
+  | 'no_driver'
+  | 'no_van'
+  | 'missing_geocode'
+  | 'empty'
+  | 'no_home_location'
+  | 'unassigned';
+
+export interface RouteWarning {
+  code: RouteWarningCode;
+  message: string;
+  orderIds?: string[];
+}
+
+export interface PlannerRoute {
+  id: string;
+  name: string;
+  status: RouteStatus;
+  depotId: string;
+  endType: RouteEndType;
+  driverId: string | null;
+  driverName: string | null;
+  vanId: string | null;
+  vanName: string | null;
+  vanRegistration: string | null;
+  capacityUnits: number | null;
+  loadUnits: number;
+  plannedStart: string | null;
+  plannedEnd: string | null;
+  totalMiles: number | null;
+  driveMinutes: number | null;
+  totalMinutes: number | null;
+  polyline: string | null;
+  engine: RoutingEngineKind | null;
+  optimisedAt: string | null;
+  releasedAt: string | null;
+  /** Stops can be changed (draft or released, not yet started). */
+  editable: boolean;
+  stops: PlannerStop[];
+  warnings: RouteWarning[];
+}
+
+export interface PlannerDriver {
+  id: string;
+  name: string;
+  defaultVanId: string | null;
+  workStart: string;
+  workEnd: string;
+  maxHours: number;
+  hasHomeLocation: boolean;
+  /** Released / in-progress routes this driver already has on the date. */
+  busyRouteNames: string[];
+}
+
+export interface PlannerVan {
+  id: string;
+  name: string;
+  registration: string;
+  capacityUnits: number;
+  capacityKg: number | null;
+  capacityM3: number | null;
+}
+
+export interface PlannerState {
+  date: string;
+  engines: { optimiser: RoutingEngineKind; travel: RoutingEngineKind };
+  depots: Depot[];
+  defaultDepotId: string | null;
+  defaultEndType: RouteEndType;
+  drivers: PlannerDriver[];
+  vans: PlannerVan[];
+  routes: PlannerRoute[];
+  /** Eligible orders not on any route for the date (RTE-01). */
+  unassigned: PlannerOrder[];
+  warnings: RouteWarning[];
+}
+
+export interface OptimiseSkipped {
+  orderId: string;
+  orderNumber: string;
+  reason: string;
+}
+
+export interface OptimiseJob {
+  id: string;
+  date: string;
+  status: 'running' | 'done' | 'failed';
+  phase: string;
+  startedAt: string;
+  finishedAt: string | null;
+  error: string | null;
+  result: { routeIds: string[]; skipped: OptimiseSkipped[]; engine: RoutingEngineKind } | null;
 }
 
 /** Everything the public tracking page is allowed to see (TRK-03/04). */

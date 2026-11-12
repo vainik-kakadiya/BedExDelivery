@@ -3,6 +3,7 @@ import { toLondonDate } from '@bedex/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import { Router } from 'express';
 import type { AppContext } from '../../context';
+import { changeStream } from '../../lib/sse';
 import { currentDriverId, requireAuth, requireRole } from '../../middleware/auth';
 
 /**
@@ -28,7 +29,7 @@ export const DRIVER_ORDER_COLUMNS = {
   requiresSignature: true,
 } as const;
 
-export function driverRouter({ db, env }: AppContext) {
+export function driverRouter({ db, env, changes }: AppContext) {
   const router = Router();
   router.use(requireAuth(env.JWT_ACCESS_SECRET), requireRole('driver'));
 
@@ -42,7 +43,18 @@ export function driverRouter({ db, env }: AppContext) {
         eq(routes.date, today),
         inArray(routes.status, ['released', 'in_progress', 'completed']),
       ),
-      columns: { id: true, date: true, name: true, status: true, totalMiles: true, totalMinutes: true, startedAt: true },
+      columns: {
+        id: true,
+        date: true,
+        name: true,
+        status: true,
+        totalMiles: true,
+        totalMinutes: true,
+        startedAt: true,
+        releasedAt: true,
+        // RTE-09: set when the office edits a released route; the app highlights it.
+        changedAt: true,
+      },
       orderBy: (r, { asc }) => [asc(r.createdAt)],
       with: {
         stops: {
@@ -59,6 +71,10 @@ export function driverRouter({ db, env }: AppContext) {
     });
     res.json({ date: today, routes: rows });
   });
+
+  // RTE-09 / DRV-05: tell the app to refetch when routes change. Events carry
+  // table names only; the refetch above is what enforces driver scoping.
+  router.get('/stream', changeStream(changes, ['routes', 'route_stops', 'orders']));
 
   // TODO(weeks 4–5): POST /routes/:id/start, /stops/:id/complete, /uploads, /location —
   // each must re-check that the route/stop belongs to currentDriverId(req).

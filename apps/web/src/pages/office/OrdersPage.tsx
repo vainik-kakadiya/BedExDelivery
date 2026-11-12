@@ -78,13 +78,14 @@ export function OrdersPage() {
     filters.status && !ORDER_STATUSES.includes(filters.status as never) && !STATUS_GROUPS.some((g) => g.value === filters.status);
 
   return (
-    <div>
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+    // Fill the viewport (minus <main>'s 24px padding top and bottom) so only the table scrolls.
+    <div className="flex h-[calc(100dvh-3rem)] flex-col">
+      <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Orders</h1>
         <ExportButtons label="Export" path={(f) => `/exports/orders?${queryString}${queryString ? '&' : ''}format=${f}`} />
       </div>
 
-      <div className="card mb-4 grid gap-3 p-3 md:grid-cols-2 xl:grid-cols-6">
+      <div className="card mb-4 grid shrink-0 gap-3 p-3 md:grid-cols-2 xl:grid-cols-6">
         <div className="relative md:col-span-2">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden />
           <input
@@ -167,9 +168,10 @@ export function OrdersPage() {
         )}
       </div>
 
-      <div className="card overflow-x-auto">
+      <div className="card min-h-[300px] flex-1 overflow-auto" aria-label="Orders" tabIndex={0}>
         <table className="w-full text-left">
-          <thead className="border-b border-border bg-surface text-xs uppercase tracking-wide text-slate-500">
+          {/* Sticky header; a shadow stands in for the border, which wouldn't stick with collapsed borders. */}
+          <thead className="sticky top-0 z-10 bg-surface text-xs uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_rgb(var(--border))]">
             <tr>
               <th className="px-4 py-2.5 font-medium">Order</th>
               <th className="px-4 py-2.5 font-medium">Tracking ref</th>
@@ -209,15 +211,14 @@ export function OrdersPage() {
         {orders.isSuccess && rows.length === 0 && (
           <p className="p-6 text-center text-slate-500">{activeCount ? 'No orders match these filters.' : 'No orders yet.'}</p>
         )}
+        {orders.hasNextPage && (
+          <div className="border-t border-border p-4 text-center">
+            <button type="button" className="btn-secondary" onClick={() => orders.fetchNextPage()} disabled={orders.isFetchingNextPage}>
+              {orders.isFetchingNextPage ? 'Loading…' : 'Load more'}
+            </button>
+          </div>
+        )}
       </div>
-
-      {orders.hasNextPage && (
-        <div className="mt-4 text-center">
-          <button type="button" className="btn-secondary" onClick={() => orders.fetchNextPage()} disabled={orders.isFetchingNextPage}>
-            {orders.isFetchingNextPage ? 'Loading…' : 'Load more'}
-          </button>
-        </div>
-      )}
     </div>
   );
 }

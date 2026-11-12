@@ -13,7 +13,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { hash } from '@node-rs/argon2';
 import { type FailureReason, type OrderStatus, generateTrackingRef, toLondonDate } from '@bedex/shared';
 import { config } from 'dotenv';
-import { eq, inArray, like } from 'drizzle-orm';
+import { eq, inArray, like, or } from 'drizzle-orm';
 import {
   type Db,
   createDb,
@@ -148,7 +148,16 @@ interface RoutePlan {
 async function reset(db: Db) {
   const demoUsers = await db.select({ id: users.id }).from(users).where(like(users.email, `%${DEMO_EMAIL_DOMAIN}`));
   const userIds = demoUsers.map((u) => u.id);
-  await db.delete(routes).where(like(routes.name, 'DEMO %'));
+  // Demo routes, plus any route planned from demo data (planner names them "Route A"…).
+  const demoDepots = db.select({ id: depots.id }).from(depots).where(like(depots.name, 'DEMO %'));
+  const routesWithDemoOrders = db
+    .select({ id: routeStops.routeId })
+    .from(routeStops)
+    .innerJoin(orders, eq(orders.id, routeStops.orderId))
+    .where(like(orders.orderNumber, 'DEMO-%'));
+  await db
+    .delete(routes)
+    .where(or(like(routes.name, 'DEMO %'), inArray(routes.depotId, demoDepots), inArray(routes.id, routesWithDemoOrders)));
   await db.delete(orders).where(like(orders.orderNumber, 'DEMO-%'));
   if (userIds.length) {
     await db.delete(drivers).where(inArray(drivers.userId, userIds));

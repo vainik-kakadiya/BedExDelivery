@@ -10,7 +10,7 @@ export default defineConfig({
     // DRP: the driver portal is an installable PWA. Offline queue (IndexedDB) arrives in weeks 4–5.
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon.svg'],
+      includeAssets: ['favicon.svg', 'favicon.ico', 'favicon-96x96.png', 'apple-touch-icon.png', 'BedExLogo.png'],
       manifest: {
         name: 'BedEx Driver',
         short_name: 'BedEx',
@@ -21,7 +21,12 @@ export default defineConfig({
         orientation: 'portrait',
         theme_color: '#0F172A',
         background_color: '#F7F8FA',
-        icons: [{ src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' }],
+        icons: [
+          { src: '/web-app-manifest-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+          { src: '/web-app-manifest-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          { src: '/web-app-manifest-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/favicon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+        ],
       },
       workbox: {
         navigateFallback: '/index.html',

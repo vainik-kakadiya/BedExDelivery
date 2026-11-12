@@ -4,14 +4,17 @@ import { pino } from 'pino';
 import { createApp } from './app';
 import { loadEnv } from './env';
 import { ChangeFeed } from './lib/changeFeed';
+import { createRoutingEngine } from './modules/planning/engine';
 
 config({ path: ['../../.env', '.env'] });
 
 const env = loadEnv();
 const logger = pino({ level: env.LOG_LEVEL });
-const { db, client } = createDb(env.DATABASE_URL);
+const { db, client } = createDb(env.DATABASE_URL, { max: env.DATABASE_POOL_MAX });
 const changes = new ChangeFeed();
-const app = createApp({ db, env, changes }, { logger });
+const routing = createRoutingEngine(env, logger);
+logger.info(`Route optimisation: ${routing.optimiserKind}; travel times: ${routing.travelKind}`);
+const app = createApp({ db, env, changes, routing }, { logger });
 
 // DSH-07: database triggers NOTIFY on change; fan out to dashboard streams.
 // Needs a session-mode connection (direct or Supabase session pooler on :5432);

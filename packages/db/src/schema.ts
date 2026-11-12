@@ -272,6 +272,15 @@ export const routes = pgTable(
     totalMiles: doublePrecision('total_miles'),
     driveMinutes: integer('drive_minutes'),
     totalMinutes: integer('total_minutes'),
+    /** Leave-depot and back/finish times from the last ETA calculation. */
+    plannedStart: ts('planned_start'),
+    plannedEnd: ts('planned_end'),
+    /** Google encoded polyline of the road path; null when timings are estimated. */
+    polyline: text('polyline'),
+    /** 'google' or 'estimate': how the stored timings were produced. */
+    routingEngine: text('routing_engine'),
+    /** Last office change to a released route; the driver app highlights it (RTE-09). */
+    changedAt: ts('changed_at'),
     optimisedAt: ts('optimised_at'),
     releasedAt: ts('released_at'),
     startedAt: ts('started_at'),
