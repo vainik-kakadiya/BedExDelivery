@@ -1,7 +1,10 @@
 import { type LoginInput, loginSchema } from '@bedex/shared';
 import { zodResolver } from '@hookform/resolvers/zod';
+import { Eye, EyeOff } from 'lucide-react';
+import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { DeliveryPattern } from '../components/DeliveryPattern';
 import { FullPageSpinner } from '../components/RequireRole';
 import { ApiError, homePathFor, login } from '../lib/api';
 import { useAuth } from '../stores/auth';
@@ -9,6 +12,7 @@ import { useAuth } from '../stores/auth';
 export function LoginPage() {
   const { status, user } = useAuth();
   const navigate = useNavigate();
+  const [showPassword, setShowPassword] = useState(false);
   const from = (useLocation().state as { from?: string } | null)?.from;
   const {
     register,
@@ -31,13 +35,14 @@ export function LoginPage() {
   });
 
   return (
-    <div className="flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm">
+    <div className="relative isolate flex min-h-screen items-center justify-center overflow-hidden px-4">
+      <DeliveryPattern />
+      <div className="relative w-full max-w-sm">
         <div className="mb-8 text-center">
           <img src="/BedExLogo.png" alt="BedEx Delivery" width={412} height={137} className="mx-auto h-16 w-auto" />
           <p className="mt-4 text-slate-600">Sign in to the delivery portal</p>
         </div>
-        <form onSubmit={onSubmit} className="card space-y-4 p-6" noValidate>
+        <form onSubmit={onSubmit} className="card space-y-4 p-6 shadow-xl shadow-slate-900/5" noValidate>
           <div>
             <label htmlFor="identifier" className="label">
               Email or phone
@@ -49,13 +54,24 @@ export function LoginPage() {
             <label htmlFor="password" className="label">
               Password
             </label>
-            <input
-              id="password"
-              type="password"
-              autoComplete="current-password"
-              className="input min-h-tap"
-              {...register('password')}
-            />
+            <div className="relative">
+              <input
+                id="password"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="current-password"
+                className="input min-h-tap pr-12"
+                {...register('password')}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                aria-pressed={showPassword}
+                className="absolute inset-y-0 right-0 flex min-w-tap items-center justify-center rounded-r-md text-slate-500 hover:text-ink"
+              >
+                {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+              </button>
+            </div>
             {errors.password && <p className="mt-1 text-sm text-danger">{errors.password.message}</p>}
           </div>
           {errors.root && (

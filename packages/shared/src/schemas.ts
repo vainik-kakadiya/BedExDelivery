@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ATTEMPT_OUTCOMES, ORDER_SOURCES, ROUTE_END_TYPES } from './enums';
+import { ATTEMPT_OUTCOMES, LEFT_AT_TYPES, ORDER_SOURCES, ROUTE_END_TYPES } from './enums';
 import { normalisePhone, normalisePostcode } from './format';
 import { ORDER_STATUSES } from './status';
 
@@ -135,6 +135,11 @@ export const orderStatusChangeSchema = z
   });
 export type OrderStatusChangeInput = z.infer<typeof orderStatusChangeSchema>;
 
+export const orderDeleteSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1, 'Choose at least one order').max(500, 'Delete at most 500 orders at a time'),
+});
+export type OrderDeleteInput = z.infer<typeof orderDeleteSchema>;
+
 const csvList = (v: unknown) => (typeof v === 'string' ? v.split(',').filter(Boolean) : v);
 
 export const orderListQuerySchema = z.object({
@@ -240,7 +245,7 @@ export const stopTransferSchema = z.object({
 const nullableNumber = (min: number, max: number) =>
   z.preprocess((v) => (v === '' || v === undefined ? null : v), z.coerce.number().min(min).max(max).nullable());
 
-export const passwordSchema = z.string().min(12, 'Use at least 12 characters').max(200);
+export const passwordSchema = z.string().min(8, 'Use at least 8 characters').max(200);
 
 const driverFields = z.object({
   name: z.string().trim().min(1, 'Enter a name').max(200),
@@ -313,3 +318,39 @@ export const trackQuerySchema = z.object({
   postcode: z.string().trim().min(5).max(10),
 });
 export type TrackQuery = z.infer<typeof trackQuerySchema>;
+
+// ---------- driver: proof of delivery (DRP-05) ----------
+
+/** Photos live under orders/<orderId>/<stopId>/; the API rejects paths outside the stop being completed. */
+export const MAX_PROOF_PHOTOS = 6;
+
+export const stopDeliveredSchema = z
+  .object({
+    outcome: z.literal('delivered'),
+    recipientName: z.string().trim().min(1, 'Enter who took the delivery').max(120),
+    leftAtType: z.enum(LEFT_AT_TYPES),
+    leftAtNote: z.preprocess(emptyToNull, z.string().trim().max(300).nullish()),
+    notes: z.preprocess(emptyToNull, z.string().trim().max(1000).nullish()),
+    photos: z
+      .array(z.object({ path: z.string().min(1).max(300), takenAt: z.string().datetime().nullish() }))
+      .min(1, 'Take at least one photo')
+      .max(MAX_PROOF_PHOTOS, `At most ${MAX_PROOF_PHOTOS} photos`),
+    /** Generated on the device so a retried request never records the delivery twice (DRP-06). */
+    clientActionId: uuid,
+    occurredAt: z.string().datetime().nullish(),
+  })
+  .superRefine((v, ctx) => {
+    if (v.leftAtType === 'neighbour' && !v.leftAtNote) {
+      ctx.addIssue({ code: 'custom', path: ['leftAtNote'], message: "Enter the neighbour's door number" });
+    }
+    if (v.leftAtType === 'safe_place' && !v.leftAtNote) {
+      ctx.addIssue({ code: 'custom', path: ['leftAtNote'], message: 'Describe the safe place' });
+    }
+  });
+export type StopDeliveredInput = z.infer<typeof stopDeliveredSchema>;
+
+export const LEFT_AT_LABELS = {
+  customer: 'Handed to customer',
+  neighbour: 'Left with neighbour',
+  safe_place: 'Safe place',
+} as const;

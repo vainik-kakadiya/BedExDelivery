@@ -2,6 +2,7 @@ import type { VanDto } from '@bedex/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Pencil, Plus, Power, Truck } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
+import { confirmDialog } from '../../../components/ConfirmDialog';
 import { api } from '../../../lib/api';
 import { useAuth } from '../../../stores/auth';
 import { Field, readApiError } from './fields';
@@ -61,7 +62,17 @@ export function VansPage() {
   }
 
   async function setActive(v: VanDto, active: boolean) {
-    if (!active && !window.confirm(`Deactivate ${v.name} (${v.registration})? It won't be offered for new routes.`)) return;
+    if (
+      !active &&
+      !(await confirmDialog({
+        title: `Deactivate ${v.name} (${v.registration})?`,
+        message: "It won't be offered for new routes. You can reactivate it later.",
+        confirmLabel: 'Deactivate',
+        tone: 'danger',
+      }))
+    ) {
+      return;
+    }
     setRowError(null);
     try {
       await api(`/vans/${v.id}`, { method: 'PATCH', json: { active } });
@@ -74,7 +85,7 @@ export function VansPage() {
   const set = (key: keyof FormState) => (e: { target: { value: string } }) => setForm((f) => f && { ...f, [key]: e.target.value });
 
   return (
-    <div className="max-w-5xl space-y-4">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Vans</h1>
         {isAdmin && !form && (

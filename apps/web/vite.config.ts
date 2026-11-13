@@ -19,7 +19,7 @@ export default defineConfig({
         scope: '/',
         display: 'standalone',
         orientation: 'portrait',
-        theme_color: '#0F172A',
+        theme_color: '#FFFFFF',
         background_color: '#F7F8FA',
         icons: [
           { src: '/web-app-manifest-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },

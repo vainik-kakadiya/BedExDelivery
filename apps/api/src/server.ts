@@ -4,6 +4,7 @@ import { pino } from 'pino';
 import { createApp } from './app';
 import { loadEnv } from './env';
 import { ChangeFeed } from './lib/changeFeed';
+import { createSupabaseStorage } from './lib/storage';
 import { createRoutingEngine } from './modules/planning/engine';
 
 config({ path: ['../../.env', '.env'] });
@@ -14,7 +15,9 @@ const { db, client } = createDb(env.DATABASE_URL, { max: env.DATABASE_POOL_MAX }
 const changes = new ChangeFeed();
 const routing = createRoutingEngine(env, logger);
 logger.info(`Route optimisation: ${routing.optimiserKind}; travel times: ${routing.travelKind}`);
-const app = createApp({ db, env, changes, routing }, { logger });
+const storage = createSupabaseStorage(env);
+if (!storage) logger.warn('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not set: drivers cannot upload delivery photos');
+const app = createApp({ db, env, changes, routing, storage }, { logger });
 
 // DSH-07: database triggers NOTIFY on change; fan out to dashboard streams.
 // Needs a session-mode connection (direct or Supabase session pooler on :5432);

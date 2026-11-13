@@ -6,13 +6,12 @@
  * Design tokens (PRD §4). Values are space-separated RGB so Tailwind opacity
  * modifiers work (e.g. bg-brand-primary/10).
  *
- * TODO(open question): the three --brand-* values are PLACEHOLDERS. Replace
- * them with the hex codes confirmed from bedexdelivery.co.uk / the brand guide.
+ * Brand colours match the BedEx logo: the red "Ex" and the black "Bed".
  */
 :root {
-  --brand-primary: 0 82 155; /* placeholder */
-  --brand-secondary: 245 130 32; /* placeholder */
-  --brand-dark: 15 23 42; /* placeholder */
+  --brand-primary: 198 58 57; /* #C63A39, logo "Ex" red */
+  --brand-secondary: 158 46 45; /* #9E2E2D, darker shade of the primary */
+  --brand-dark: 26 26 26; /* #1A1A1A, logo black */
 
   --surface: 247 248 250; /* #F7F8FA */
   --border: 229 231 235; /* #E5E7EB */
@@ -21,6 +20,18 @@
   --warning: 217 119 6; /* #D97706 */
   --danger: 220 38 38; /* #DC2626 */
   --info: 37 99 235; /* #2563EB */
+}
+
+/* ConfirmDialog entrance */
+@keyframes confirm-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @layer base {

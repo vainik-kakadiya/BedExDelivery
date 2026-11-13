@@ -17,7 +17,7 @@ async function main() {
   const name = process.env.SEED_ADMIN_NAME?.trim() || 'Admin';
   if (!url) throw new Error('DATABASE_URL is not set');
   if (!email || !password) throw new Error('SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD are required');
-  if (password.length < 12) throw new Error('SEED_ADMIN_PASSWORD must be at least 12 characters');
+  if (password.length < 8) throw new Error('SEED_ADMIN_PASSWORD must be at least 8 characters');
 
   const { db, client } = createDb(url, { max: 1 });
   try {

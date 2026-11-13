@@ -45,6 +45,13 @@ const DRIVER_TRANSITIONS: Readonly<Partial<Record<OrderStatus, readonly OrderSta
 
 export type TransitionCheck = { ok: true; reopen: boolean } | { ok: false; reason: string };
 
+/**
+ * Orders in these statuses can be deleted outright (e.g. entered or imported by
+ * mistake), provided they were never on a route and have no delivery attempts.
+ * Anything further along keeps its history: cancel it instead.
+ */
+export const DELETABLE_ORDER_STATUSES: readonly OrderStatus[] = ['awaiting_scheduling', 'in_warehouse', 'cancelled'];
+
 export function isFinalStatus(status: OrderStatus): boolean {
   return FINAL_ORDER_STATUSES.includes(status);
 }

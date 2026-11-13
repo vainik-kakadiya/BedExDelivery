@@ -62,7 +62,7 @@ export function DriverForm({ driver, vans, onDone, onCancel }: Props) {
           value={f.password}
           onChange={set('password')}
           error={err('password')}
-          hint={driver ? 'Leave blank to keep it. Changing it signs them out.' : 'At least 12 characters'}
+          hint={driver ? 'Leave blank to keep it. Changing it signs them out.' : 'At least 8 characters'}
         />
       </fieldset>
 

@@ -11,8 +11,11 @@ import {
   users,
 } from '@bedex/db';
 import {
+  DELETABLE_ORDER_STATUSES,
   ORDER_STATUS_META,
   type OrderCreateInput,
+  type OrderDeleteInput,
+  type OrderDeleteResult,
   type OrderListItem,
   type OrderListQuery,
   type OrderStatus,
@@ -390,4 +393,47 @@ export async function lockOrder(tx: Tx, id: string): Promise<OrderRow> {
   const [order] = await tx.select().from(orders).where(eq(orders.id, id)).for('update');
   if (!order) throw notFound('Order not found');
   return order;
+}
+
+// ---------- delete ----------
+
+/**
+ * Delete orders created by mistake. Only orders that never got near a delivery
+ * qualify (DELETABLE_ORDER_STATUSES, never on a route, no attempts); the rest
+ * are skipped with a reason so the office can cancel them instead.
+ * Items, history events and issues go with the order (ON DELETE CASCADE).
+ */
+export async function deleteOrders(db: Db, input: OrderDeleteInput): Promise<OrderDeleteResult & { deletedOrders: { id: string; orderNumber: string }[] }> {
+  const ids = [...new Set(input.ids)];
+  return db.transaction(async (tx) => {
+    const found = await tx
+      .select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status, currentRouteId: orders.currentRouteId })
+      .from(orders)
+      .where(inArray(orders.id, ids))
+      .for('update');
+    const [onRoutes, attempted] = await Promise.all([
+      tx.selectDistinct({ orderId: routeStops.orderId }).from(routeStops).where(inArray(routeStops.orderId, ids)),
+      tx.selectDistinct({ orderId: deliveryAttempts.orderId }).from(deliveryAttempts).where(inArray(deliveryAttempts.orderId, ids)),
+    ]);
+    const routeSet = new Set(onRoutes.map((r) => r.orderId));
+    const attemptSet = new Set(attempted.map((r) => r.orderId));
+
+    const skipped: OrderDeleteResult['skipped'] = [];
+    const deletable: { id: string; orderNumber: string }[] = [];
+    for (const o of found) {
+      let reason: string | null = null;
+      if (!DELETABLE_ORDER_STATUSES.includes(o.status)) {
+        reason = `It is "${ORDER_STATUS_META[o.status].label}". Cancel it instead.`;
+      } else if (attemptSet.has(o.id)) {
+        reason = 'It has a delivery attempt on record. Cancel it instead.';
+      } else if (routeSet.has(o.id) || o.currentRouteId) {
+        reason = 'It is (or was) on a route. Take it off the route or cancel it instead.';
+      }
+      if (reason) skipped.push({ id: o.id, orderNumber: o.orderNumber, reason });
+      else deletable.push({ id: o.id, orderNumber: o.orderNumber });
+    }
+
+    if (deletable.length) await tx.delete(orders).where(inArray(orders.id, deletable.map((o) => o.id)));
+    return { deleted: deletable.length, skipped, deletedOrders: deletable };
+  });
 }

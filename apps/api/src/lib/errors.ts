@@ -32,6 +32,9 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   } else if (err instanceof ZodError) {
     status = 400;
     body = { code: 'VALIDATION_ERROR', message: 'Some fields are invalid', details: err.flatten() };
+  } else if (isBodyTooLarge(err)) {
+    status = 413;
+    body = { code: 'TOO_LARGE', message: 'That upload is too large' };
   } else if (isBodyParserError(err)) {
     status = 400;
     body = { code: 'BAD_REQUEST', message: 'Request body is not valid JSON' };
@@ -46,6 +49,10 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
 
 function isBodyParserError(err: unknown): boolean {
   return typeof err === 'object' && err !== null && (err as { type?: string }).type === 'entity.parse.failed';
+}
+
+function isBodyTooLarge(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { type?: string }).type === 'entity.too.large';
 }
 
 function isPgError(err: unknown, code: string): err is { code: string; constraint_name?: string } {

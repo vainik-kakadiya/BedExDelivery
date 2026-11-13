@@ -33,6 +33,10 @@ const envSchema = z.object({
   GOOGLE_CLOUD_PROJECT_ID: optional,
   /** Service account JSON (raw or base64) for the Route Optimization API, which needs OAuth. */
   GOOGLE_SERVICE_ACCOUNT_JSON: optional,
+  // Supabase Storage for proof-of-delivery photos (DRP-05). Backend only: never expose the key.
+  SUPABASE_URL: z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.string().url().optional()),
+  SUPABASE_SERVICE_ROLE_KEY: optional,
+  SUPABASE_PHOTO_BUCKET: z.string().trim().min(1).default('delivery-photos'),
 });
 
 export type Env = z.infer<typeof envSchema>;

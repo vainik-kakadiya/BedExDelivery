@@ -78,12 +78,12 @@ export function OfficeLayout() {
             <span className={cn('h-2 w-2 shrink-0 rounded-full', live.dot)} aria-hidden />
             {live.text}
           </p>
-          <div className="mb-2 px-2">
-            <p className="truncate font-medium text-ink" title={user?.name}>
+          <div className="mb-2 flex items-center gap-2 px-2">
+            <p className="min-w-0 truncate font-medium text-ink" title={user?.name}>
               {user?.name}
             </p>
             {user && (
-              <span className="mt-1 inline-block rounded-full bg-surface px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-border">
+              <span className="shrink-0 rounded-full bg-surface px-2 py-0.5 text-xs font-medium text-slate-600 ring-1 ring-inset ring-border">
                 {ROLE_LABELS[user.role]}
               </span>
             )}

@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, MapPin, Pencil, Plus, Power } from 'lucide-react';
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { confirmDialog } from '../../../components/ConfirmDialog';
 import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { londonTime, relativeTime } from '../../../lib/format';
@@ -48,7 +49,17 @@ export function DriversPage() {
     Promise.all([queryClient.invalidateQueries({ queryKey: ['fleet'] }), queryClient.invalidateQueries({ queryKey: ['planner'] })]);
 
   async function setActive(d: DriverDto, active: boolean) {
-    if (!active && !window.confirm(`Deactivate ${d.name}? They are signed out and can't sign in until reactivated. Their history is kept.`)) return;
+    if (
+      !active &&
+      !(await confirmDialog({
+        title: `Deactivate ${d.name}?`,
+        message: "They are signed out and can't sign in until reactivated. Their delivery history is kept.",
+        confirmLabel: 'Deactivate',
+        tone: 'danger',
+      }))
+    ) {
+      return;
+    }
     setRowError(null);
     try {
       await api(`/drivers/${d.id}`, { method: 'PATCH', json: { active } });
@@ -61,7 +72,7 @@ export function DriversPage() {
   const progressFor = (id: string) => progress.data?.find((p) => p.driverId === id);
 
   return (
-    <div className="max-w-6xl space-y-4">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold">Drivers</h1>

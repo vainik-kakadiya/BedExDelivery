@@ -37,7 +37,7 @@ packages/
 
 - **Express 5** over Fastify. It has native async error handling and the larger middleware ecosystem.
 - **Drizzle** over Prisma. Its SQL-first style suits trigram search and the keyset pagination.
-- **HS256** access tokens (15 min) via `jose`. Refresh tokens are 7 days, stored as SHA-256 hashes, rotated on every use and grouped into families. Reusing a revoked token revokes the whole family. A 10-second grace window covers two tabs refreshing at the same moment.
+- **HS256** access tokens (15 min) via `jose`. Refresh tokens are 30 days (sliding: renewed on every refresh), stored as SHA-256 hashes, rotated on every use and grouped into families. Reusing a revoked token revokes the whole family. A 10-second grace window covers two tabs refreshing at the same moment.
 - **argon2id** (`@node-rs/argon2`, prebuilt binaries). Accounts lock for 15 minutes after 5 failed sign-ins.
 - **Tracking refs** are `BDX` + 9 characters from a 32-character alphabet with no 0/O/1/I. Legacy references keep their original format.
 - **Reopen** (admin only) moves a Delivered or Cancelled order back to *Awaiting scheduling*.
@@ -97,10 +97,26 @@ Estimated routes are labelled **Estimated** in the UI and drawn as dashed straig
   - **Reassignment (DRV-05):** whole route → another driver/van (`PATCH /routes/:id`), or individual outstanding stops → another route on the same day, including from a route already on the road (`POST /routes/:id/stops/transfer`). Completed stops can't move, and stops already out for delivery can't move onto a draft. Both drivers' apps refresh; each order's history records `route_changed` with the from/to drivers.
   - **In-progress ETAs:** recalculation only re-times outstanding stops, from the last completed stop, starting now.
 
+- **Driver app: complete a delivery (DRP-04, DRP-05 "Delivered", DRP-07).** The app has a **Today** tab (stops to do) and a **Completed** tab. Tapping a stop opens its details (items, access instructions, notes, Navigate/Call) and a *Complete delivery* form.
+  - **Photos (at least 1, up to 6):** the phone camera opens. Each photo is shrunk on the phone to at most 1600 px and about 300 KB, then uploaded straight away (`POST /driver/stops/:id/photos`). Each one shows its upload status; a failed upload can be retried.
+  - **Storage:** the API stores photos in the private Supabase Storage bucket `SUPABASE_PHOTO_BUCKET` (default `delivery-photos`) under `orders/<orderId>/<stopId>/`, using the service-role key. The browser never talks to Supabase.
+  - **Upload checks:** the API checks the actual file bytes (JPEG/PNG/WebP), caps uploads at 8 MB, and only lets a driver upload to their own open stops.
+  - **The rest of the form:** who received it (required), and where it was left: handed to the customer, a neighbour (door number required) or a safe place (description required). Notes are optional.
+  - **What gets recorded** (`POST /driver/stops/:id/complete`): one `delivery_attempts` row (attempt no., recipient, left-at, notes), its `attempt_photos`, every item's delivered quantity set to the ordered quantity, the order moved to *Delivered* with history, and the stop marked complete. The office dashboard and the driver's tabs update live.
+  - **Starting the route:** completing the first stop of a released route starts it: the route goes *In progress* and its *Scheduled* orders go *Out for delivery* (the effect of DRP-03, until there is a Start button).
+  - **Retries:** each submission carries a device-generated `clientActionId`, so a retry never records the delivery twice.
+
+- **Order import (ORD-05/06).** *Orders → Import orders* takes a CSV or `.xlsx` file (up to 5 MB and 5,000 rows) in three steps.
+  - **Upload:** the API reads the file into a table (`POST /orders/import/parse`, raw body). It handles UTF-8 or Windows-1252 CSVs with `,` `;` or tab separators, and the first visible Excel sheet, including date/time cells and phone numbers that lost their leading 0. Nothing is saved at this point.
+  - **Match columns:** columns are guessed from header names, and the last mapping used is remembered in the browser. A downloadable template shows the expected layout.
+  - **Review and import:** each order is shown as *ready*, *possible duplicate*, *already exists* (same order number) or *needs fixing* (`POST /orders/import/preview`). Possible duplicates are recent orders (within the `import.duplicateWindowDays` setting) with the same postcode, the same phone (or name, when there is no phone) and a product in common, either already in the system or earlier in the same file.
+  - **Commit** (`POST /orders/import/commit`) re-checks everything in one transaction, imports the ready orders (plus duplicates if chosen) with `source = import`, and writes an `import_jobs` row, a `created` event per order and an audit entry.
+  - **One row per item:** rows that share an order number become one order with several items. Values go through the same validation as manual entry. Re-importing a corrected file is safe, because orders already imported are skipped.
+
 **Not started.**
-- Order create/edit UI, import with column mapping and duplicate detection (ORD-05/06), geocoding (ORD-07), Shopify (ORD-08)
+- Order create/edit UI, saved import templates (`import_templates`), geocoding (ORD-07), Shopify (ORD-08)
 - Office/admin user management (ACC-01)
-- Driver start/complete route and stops, photo upload, IndexedDB offline queue, GPS (DRP-03…09). These move routes to *In progress* / *Completed* (the rest of RTE-09).
+- Driver app: explicit Start/End route (DRP-03, DRP-09), *Partially delivered* / *Failed* outcomes and issue reports (rest of DRP-05), signature pad for `requires_signature` orders, IndexedDB offline queue (DRP-06), GPS (DRP-08). Showing proof photos to the office (HST-03) and on tracking (TRK-03).
 - Optimisation jobs live in memory: a single API process (PM2 fork mode) is fine; several processes would need BullMQ/Redis.
 - Audit-log viewer and data migration (ACC-03 viewer, ACC-05)
 - Postgres RLS as the second layer for driver data (ACC-02). Today the API layer enforces it.

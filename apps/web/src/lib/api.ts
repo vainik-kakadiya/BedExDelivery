@@ -14,14 +14,15 @@ export class ApiError extends Error {
   }
 }
 
-interface ApiOptions extends Omit<RequestInit, 'body'> {
+interface ApiOptions extends RequestInit {
+  /** Sent as JSON. Use `body` instead for raw uploads (e.g. a photo Blob). */
   json?: unknown;
   /** Set false for public endpoints so a 401 never triggers a refresh. */
   auth?: boolean;
 }
 
 /** Authenticated fetch: adds the bearer token, refreshes once on 401, throws ApiError on failure. */
-export async function request(path: string, { json, auth = true, headers, ...init }: ApiOptions = {}): Promise<Response> {
+export async function request(path: string, { json, auth = true, headers, body, ...init }: ApiOptions = {}): Promise<Response> {
   const send = () => {
     const token = useAuth.getState().accessToken;
     return fetch(`${BASE}${path}`, {
@@ -33,7 +34,7 @@ export async function request(path: string, { json, auth = true, headers, ...ini
         ...(auth && token && { Authorization: `Bearer ${token}` }),
         ...headers,
       },
-      body: json !== undefined ? JSON.stringify(json) : undefined,
+      body: json !== undefined ? JSON.stringify(json) : body,
     });
   };
 

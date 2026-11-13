@@ -27,6 +27,12 @@ export interface SessionResponse {
   user: SessionUser;
 }
 
+export interface OrderDeleteResult {
+  deleted: number;
+  /** Orders that were kept, with the reason. */
+  skipped: { id: string; orderNumber: string; reason: string }[];
+}
+
 export interface OrderListItem {
   id: string;
   orderNumber: string;

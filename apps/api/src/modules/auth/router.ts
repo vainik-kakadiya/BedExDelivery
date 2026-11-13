@@ -12,7 +12,8 @@ import { currentUser, requireAuth } from '../../middleware/auth';
 import { limiter } from '../../middleware/rateLimit';
 
 const REFRESH_COOKIE = 'bedex_rt';
-const REFRESH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** Sliding window: each refresh issues a fresh 30-day token, so active users stay signed in. */
+const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_FAILED_LOGINS = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
 /**

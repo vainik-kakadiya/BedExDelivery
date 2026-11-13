@@ -12,6 +12,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Loader2, MapPinOff, Sparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { confirmDialog } from '../../../components/ConfirmDialog';
 import { ApiError, api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
 import { addDays } from '../../../lib/format';
@@ -85,51 +86,86 @@ export function PlannerPage() {
   }
 
   /** RTE-09: edits to a released route reach the driver straight away. */
-  const confirmReleased = (...routes: (PlannerRoute | undefined)[]) => {
+  const confirmReleased = async (...routes: (PlannerRoute | undefined)[]) => {
     const released = routes.filter((r): r is PlannerRoute => r?.status === 'released');
-    return (
-      released.length === 0 ||
-      window.confirm(`${released.map((r) => r.name).join(' and ')} ${released.length > 1 ? 'are' : 'is'} released. The driver will see this change immediately. Continue?`)
-    );
+    if (released.length === 0) return true;
+    const names = released.map((r) => r.name).join(' and ');
+    return confirmDialog({
+      title: `Change ${names}?`,
+      message: `${names} ${released.length > 1 ? 'are' : 'is'} already released. The driver will see this change immediately.`,
+      confirmLabel: 'Make change',
+      tone: 'warning',
+    });
   };
   const routeById = (id: string | null) => state?.routes.find((r) => r.id === id);
   const putStops = (route: PlannerRoute, orderIds: string[]) =>
     run(`Updating ${route.name}`, () => api(`/routes/${route.id}/stops`, { method: 'PUT', json: { orderIds } }));
 
   const actions: RouteActions = {
-    setStops: (route, orderIds) => {
-      if (confirmReleased(route)) void putStops(route, orderIds);
+    setStops: async (route, orderIds) => {
+      if (await confirmReleased(route)) void putStops(route, orderIds);
     },
-    drop: (route, payload: DragPayload, index) => {
+    drop: async (route, payload: DragPayload, index) => {
       const ids = route.stops.map((s) => s.order.id);
       const from = routeById(payload.fromRouteId);
-      if (!confirmReleased(route, from && from.id !== route.id ? from : undefined)) return;
+      if (!(await confirmReleased(route, from && from.id !== route.id ? from : undefined))) return;
       void putStops(route, insertInto(ids, payload.orderId, index));
     },
-    patch: (route, body) => {
-      if (route.status !== 'draft' && !window.confirm(`${route.name} is ${route.status.replace('_', ' ')}. The driver will see this change. Continue?`)) return;
+    patch: async (route, body) => {
+      if (
+        route.status !== 'draft' &&
+        !(await confirmDialog({
+          title: `Change ${route.name}?`,
+          message: `${route.name} is ${route.status.replace('_', ' ')}. The driver will see this change.`,
+          confirmLabel: 'Make change',
+          tone: 'warning',
+        }))
+      ) {
+        return;
+      }
       void run(`Updating ${route.name}`, () => api(`/routes/${route.id}`, { method: 'PATCH', json: body }));
     },
-    release: (route) => {
+    release: async (route) => {
       const warnings = route.warnings.filter((w) => w.code !== 'empty');
-      const msg = warnings.length
-        ? `${route.name} has warnings:\n\n• ${warnings.map((w) => w.message).join('\n• ')}\n\nRelease it to ${route.driverName ?? 'the driver'} anyway?`
-        : `Release ${route.name} to ${route.driverName ?? 'the driver'}? It will appear in their app.`;
-      if (window.confirm(msg)) void run(`Releasing ${route.name}`, () => api(`/routes/${route.id}/release`, { method: 'POST' }));
+      const driver = route.driverName ?? 'the driver';
+      const ok = await confirmDialog(
+        warnings.length
+          ? {
+              title: `Release ${route.name} with warnings?`,
+              message: `${route.name} has ${warnings.length === 1 ? 'a warning' : `${warnings.length} warnings`}. Release it to ${driver} anyway?`,
+              details: warnings.map((w) => w.message),
+              confirmLabel: 'Release anyway',
+              tone: 'warning',
+            }
+          : {
+              title: `Release ${route.name}?`,
+              message: `It will appear in ${driver}'s app straight away.`,
+              confirmLabel: 'Release',
+            },
+      );
+      if (ok) void run(`Releasing ${route.name}`, () => api(`/routes/${route.id}/release`, { method: 'POST' }));
     },
-    unrelease: (route) => {
-      if (window.confirm(`Move ${route.name} back to draft? It disappears from ${route.driverName ?? 'the driver'}'s app until released again.`)) {
-        void run(`Updating ${route.name}`, () => api(`/routes/${route.id}/unrelease`, { method: 'POST' }));
-      }
+    unrelease: async (route) => {
+      const ok = await confirmDialog({
+        title: `Move ${route.name} back to draft?`,
+        message: `It disappears from ${route.driverName ?? 'the driver'}'s app until it is released again.`,
+        confirmLabel: 'Move to draft',
+        tone: 'warning',
+      });
+      if (ok) void run(`Updating ${route.name}`, () => api(`/routes/${route.id}/unrelease`, { method: 'POST' }));
     },
-    remove: (route) => {
-      if (window.confirm(`Delete ${route.name}? Its ${route.stops.length} orders go back to unassigned.`)) {
-        void run(`Deleting ${route.name}`, () => api(`/routes/${route.id}`, { method: 'DELETE' }));
-      }
+    remove: async (route) => {
+      const ok = await confirmDialog({
+        title: `Delete ${route.name}?`,
+        message: `Its ${route.stops.length} order${route.stops.length === 1 ? '' : 's'} go back to unassigned.`,
+        confirmLabel: 'Delete route',
+        tone: 'danger',
+      });
+      if (ok) void run(`Deleting ${route.name}`, () => api(`/routes/${route.id}`, { method: 'DELETE' }));
     },
     recalculate: (route) => void run(`Recalculating ${route.name}`, () => api(`/routes/${route.id}/recalculate`, { method: 'POST' })),
-    reoptimise: (route) => {
-      if (!confirmReleased(route)) return;
+    reoptimise: async (route) => {
+      if (!(await confirmReleased(route))) return;
       void run(`Re-optimising ${route.name}`, async () => {
         const res = await api<{ skipped: { orderNumber: string; reason: string }[] }>(`/routes/${route.id}/reoptimise`, { method: 'POST' });
         if (res.skipped.length) setNotice({ title: `${route.name}: some stops don't fit`, items: res.skipped.map((s) => `${s.orderNumber}: ${s.reason}`) });
@@ -137,13 +173,13 @@ export function PlannerPage() {
     },
   };
 
-  const takeOff = (payload: DragPayload) => {
+  const takeOff = async (payload: DragPayload) => {
     const from = routeById(payload.fromRouteId);
-    if (from && confirmReleased(from)) void putStops(from, from.stops.map((s) => s.order.id).filter((id) => id !== payload.orderId));
+    if (from && (await confirmReleased(from))) void putStops(from, from.stops.map((s) => s.order.id).filter((id) => id !== payload.orderId));
   };
-  const addTo = (orderId: string, routeId: string) => {
+  const addTo = async (orderId: string, routeId: string) => {
     const route = routeById(routeId);
-    if (route && confirmReleased(route)) void putStops(route, [...route.stops.map((s) => s.order.id), orderId]);
+    if (route && (await confirmReleased(route))) void putStops(route, [...route.stops.map((s) => s.order.id), orderId]);
   };
 
   // --- optimise job (RTE-04, RTE-05) ---
@@ -177,7 +213,17 @@ export function PlannerPage() {
 
   async function optimise() {
     if (!state) return;
-    if (drafts.length && !window.confirm(`Optimising replaces the ${drafts.length} draft route${drafts.length > 1 ? 's' : ''} for ${formatUkDate(date)}. Released routes are kept. Continue?`)) return;
+    if (
+      drafts.length &&
+      !(await confirmDialog({
+        title: `Replace ${drafts.length} draft route${drafts.length > 1 ? 's' : ''}?`,
+        message: `Optimising replaces the draft routes for ${formatUkDate(date)}. Released routes are kept.`,
+        confirmLabel: 'Optimise',
+        tone: 'warning',
+      }))
+    ) {
+      return;
+    }
     setError(null);
     setNotice(null);
     try {
@@ -272,12 +318,21 @@ export function PlannerPage() {
               ))}
             </select>
           </label>
-          <div className="text-right">
-            <button type="button" className="btn-primary" disabled={!canOptimise} onClick={optimise} title={optimiseHint}>
+          {/* The hint sits in the label row, like the fields' labels, so the button lines up with the inputs. */}
+          <div className="flex flex-col items-end">
+            <p id="optimise-hint" className="min-h-4 whitespace-nowrap text-xs text-slate-500">
+              {optimiseHint}
+            </p>
+            <button
+              type="button"
+              className="btn-primary mt-1 border border-transparent py-1.5"
+              disabled={!canOptimise}
+              onClick={optimise}
+              aria-describedby="optimise-hint"
+            >
               {running ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Sparkles className="h-4 w-4" aria-hidden />}
               Optimise
             </button>
-            <p className="mt-0.5 text-[11px] text-slate-500">{optimiseHint}</p>
           </div>
         </div>
       </div>

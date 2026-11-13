@@ -18,6 +18,7 @@ const env: Env = {
   CORS_ORIGIN: ['http://localhost:5173'],
   COOKIE_SECURE: true,
   TRUST_PROXY: 0,
+  SUPABASE_PHOTO_BUCKET: 'delivery-photos',
 };
 
 /** Any DB access fails the test: these paths must be rejected before a query runs. */
@@ -32,7 +33,7 @@ const untouchableDb = new Proxy(
 
 const routing = createRoutingEngine({});
 const makeApp = () =>
-  createApp({ db: untouchableDb, env, changes: new ChangeFeed(), routing }, { logger: pino({ level: 'silent' }) });
+  createApp({ db: untouchableDb, env, changes: new ChangeFeed(), routing, storage: null }, { logger: pino({ level: 'silent' }) });
 
 const office: AuthUser = { id: '00000000-0000-4000-8000-000000000001', role: 'office', driverId: null };
 const driver: AuthUser = {
@@ -184,7 +185,7 @@ describe('dashboard & exports RBAC', () => {
 describe('dashboard stream (DSH-07)', () => {
   it('pushes coalesced change events to connected office users', async () => {
     const changes = new ChangeFeed(5);
-    const app = createApp({ db: untouchableDb, env, changes, routing }, { logger: pino({ level: 'silent' }) });
+    const app = createApp({ db: untouchableDb, env, changes, routing, storage: null }, { logger: pino({ level: 'silent' }) });
     const server = app.listen(0);
     try {
       const { port } = server.address() as { port: number };
@@ -247,5 +248,99 @@ describe('errors', () => {
       .send('{"identifier":');
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('BAD_REQUEST');
+  });
+});
+
+describe('driver proof of delivery (DRP-05)', () => {
+  const app = makeApp();
+  const stop = '00000000-0000-4000-8000-0000000000aa';
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]);
+
+  it('keeps office users and anonymous callers out', async () => {
+    expect((await request(app).post(`/api/v1/driver/stops/${stop}/photos`).send(jpeg)).status).toBe(401);
+    const res = await request(app).post(`/api/v1/driver/stops/${stop}/complete`).set('Authorization', await bearer(office)).send({});
+    expect(res.status).toBe(403);
+  });
+
+  it('treats a malformed stop id as not found', async () => {
+    const res = await request(app).post('/api/v1/driver/stops/not-a-uuid/complete').set('Authorization', await bearer(driver)).send({});
+    expect(res.status).toBe(404);
+  });
+
+  it('says so when photo storage is not configured', async () => {
+    const res = await request(app)
+      .post(`/api/v1/driver/stops/${stop}/photos`)
+      .set('Authorization', await bearer(driver))
+      .set('Content-Type', 'image/jpeg')
+      .send(jpeg);
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe('STORAGE_NOT_CONFIGURED');
+  });
+
+  it('refuses to complete a delivery without a photo, before touching the database', async () => {
+    const res = await request(app)
+      .post(`/api/v1/driver/stops/${stop}/complete`)
+      .set('Authorization', await bearer(driver))
+      .send({ outcome: 'delivered', recipientName: 'Jane', leftAtType: 'customer', photos: [], clientActionId: stop });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('order import (ORD-05)', () => {
+  const app = makeApp();
+
+  it('is office-only', async () => {
+    const res = await request(app)
+      .post('/api/v1/orders/import/parse')
+      .set('Authorization', await bearer(driver))
+      .set('Content-Type', 'application/octet-stream')
+      .send(Buffer.from('Order No\nSO-1\n'));
+    expect(res.status).toBe(403);
+  });
+
+  it('reads an uploaded CSV and suggests a column mapping', async () => {
+    const res = await request(app)
+      .post('/api/v1/orders/import/parse?fileName=orders.csv')
+      .set('Authorization', await bearer(office))
+      .set('Content-Type', 'text/csv')
+      .send(Buffer.from('Order No,Customer,Postcode\nSO-1,Jane Smith,NW10 4AB\n'));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      fileName: 'orders.csv',
+      sheetName: null,
+      headers: ['Order No', 'Customer', 'Postcode'],
+      rows: [['SO-1', 'Jane Smith', 'NW10 4AB']],
+      suggestedMapping: { orderNumber: 0, customerName: 1, postcode: 2 },
+    });
+  });
+
+  it('rejects a preview before the required columns are mapped', async () => {
+    const res = await request(app)
+      .post('/api/v1/orders/import/preview')
+      .set('Authorization', await bearer(office))
+      .send({ fileName: 'orders.csv', headers: ['Order No'], rows: [['SO-1']], mapping: { orderNumber: 0 } });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+describe('order delete', () => {
+  const app = makeApp();
+
+  it('is office-only', async () => {
+    const res = await request(app)
+      .post('/api/v1/orders/delete')
+      .set('Authorization', await bearer(driver))
+      .send({ ids: ['00000000-0000-4000-8000-000000000099'] });
+    expect(res.status).toBe(403);
+  });
+
+  it('validates the ids before touching the database', async () => {
+    const auth = await bearer(office);
+    const empty = await request(app).post('/api/v1/orders/delete').set('Authorization', auth).send({ ids: [] });
+    expect(empty.status).toBe(400);
+    const bad = await request(app).post('/api/v1/orders/delete').set('Authorization', auth).send({ ids: ['not-a-uuid'] });
+    expect(bad.status).toBe(400);
   });
 });

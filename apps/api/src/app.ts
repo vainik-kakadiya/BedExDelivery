@@ -36,6 +36,8 @@ export function createApp(ctx: AppContext, options: { logger?: Logger } = {}) {
       autoLogging: { ignore: (req) => req.url === '/api/v1/health' },
     }),
   );
+  // Order import sends the whole parsed spreadsheet back for preview and commit (ORD-05).
+  app.use('/api/v1/orders/import', express.json({ limit: '15mb' }));
   app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser());
 

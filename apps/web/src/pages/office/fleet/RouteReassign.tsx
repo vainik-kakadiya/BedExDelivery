@@ -1,6 +1,7 @@
 import type { DriverDto, DriverProgressRoute, RouteOption, VanDto } from '@bedex/shared';
 import { ArrowRightLeft, UserRoundCog } from 'lucide-react';
 import { useState } from 'react';
+import { confirmDialog } from '../../../components/ConfirmDialog';
 import { StatusBadge } from '../../../components/StatusBadge';
 import { api } from '../../../lib/api';
 import { cn } from '../../../lib/cn';
@@ -44,18 +45,28 @@ export function RouteReassign({ route, driverId, drivers, vans, dayRoutes, onCha
     }
   }
 
-  const reassign = () => {
+  const reassign = async () => {
     const toDriver = drivers.find((d) => d.id === newDriver);
-    if (!window.confirm(`Give ${route.name} to ${toDriver?.name ?? 'no driver'}? Both drivers' apps update straight away.`)) return;
+    const ok = await confirmDialog({
+      title: `Give ${route.name} to ${toDriver?.name ?? 'no driver'}?`,
+      message: "Both drivers' apps update straight away.",
+      confirmLabel: 'Reassign route',
+    });
+    if (!ok) return;
     void run(`${route.name} reassigned to ${toDriver?.name}`, () =>
       api(`/routes/${route.routeId}`, { method: 'PATCH', json: { driverId: newDriver, vanId: newVan || null } }),
     );
   };
 
-  const move = () => {
+  const move = async () => {
     const to = targets.find((r) => r.id === target);
     if (!to) return;
-    if (!window.confirm(`Move ${selected.size} stop${selected.size > 1 ? 's' : ''} to ${to.name} (${driverName(to.driverId)})? Both drivers' apps update straight away.`)) return;
+    const ok = await confirmDialog({
+      title: `Move ${selected.size} stop${selected.size > 1 ? 's' : ''} to ${to.name}?`,
+      message: `${to.name} is ${driverName(to.driverId)}'s route. Both drivers' apps update straight away.`,
+      confirmLabel: 'Move stops',
+    });
+    if (!ok) return;
     void run(`${selected.size} stop${selected.size > 1 ? 's' : ''} moved to ${to.name}`, async () => {
       await api(`/routes/${route.routeId}/stops/transfer`, { method: 'POST', json: { orderIds: [...selected], toRouteId: to.id } });
       setSelected(new Set());
