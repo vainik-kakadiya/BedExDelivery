@@ -1,4 +1,4 @@
-import type { AttemptOutcome, FailureReason, OrderSource, Role, RouteEndType } from './enums';
+import type { AttemptOutcome, FailureReason, GeocodeStatus, LeftAtType, OrderSource, PhotoType, Role, RouteEndType } from './enums';
 import type { OrderStatus, RouteStatus } from './status';
 
 /** Error envelope returned by every API error (PRD §8). */
@@ -46,6 +46,101 @@ export interface OrderListItem {
   source: OrderSource;
   geocodeStatus: string;
   createdAt: string;
+}
+
+// ---------- order detail (HST-01 – HST-03) ----------
+
+export interface OrderDetailItem {
+  id: string;
+  sku: string | null;
+  name: string;
+  qty: number;
+  deliveredQty: number;
+  units: number;
+}
+
+/** GET /orders/:id */
+export interface OrderDetail {
+  id: string;
+  orderNumber: string;
+  trackingRef: string;
+  customerName: string;
+  customerPhone: string | null;
+  customerEmail: string | null;
+  addressLine1: string;
+  addressLine2: string | null;
+  town: string;
+  postcode: string;
+  timeWindowStart: string | null;
+  timeWindowEnd: string | null;
+  serviceMinutes: number;
+  extraMinutes: number;
+  extraReason: string | null;
+  requiresSignature: boolean;
+  accessInstructions: string | null;
+  deliveryNotes: string | null;
+  internalNotes: string | null;
+  status: OrderStatus;
+  scheduledDate: string | null;
+  currentRouteId: string | null;
+  cancelReason: string | null;
+  source: OrderSource;
+  createdAt: string;
+  updatedAt: string;
+  items: OrderDetailItem[];
+}
+
+export interface OrderAttemptPhoto {
+  id: string;
+  type: PhotoType;
+  /** Short-lived signed link; null when photo storage is not configured or the file is missing. */
+  url: string | null;
+  takenAt: string | null;
+}
+
+export interface OrderAttempt {
+  id: string;
+  attemptNo: number;
+  outcome: AttemptOutcome;
+  failureReason: FailureReason | null;
+  recipientName: string | null;
+  leftAtType: LeftAtType | null;
+  leftAtNote: string | null;
+  notes: string | null;
+  occurredAt: string;
+  driverName: string | null;
+  routeName: string | null;
+  routeDate: string | null;
+  photos: OrderAttemptPhoto[];
+}
+
+export interface OrderEventItem {
+  id: string;
+  type: string;
+  fromStatus: OrderStatus | null;
+  toStatus: OrderStatus | null;
+  note: string | null;
+  createdAt: string;
+  actorName: string | null;
+  actorRole: Role | null;
+}
+
+/** GET /orders/:id/history */
+export interface OrderHistory {
+  /** The route the order is on now, if any. */
+  route: {
+    id: string;
+    name: string;
+    date: string;
+    status: RouteStatus;
+    driverName: string | null;
+    vanName: string | null;
+    vanRegistration: string | null;
+  } | null;
+  /** Newest first. */
+  attempts: OrderAttempt[];
+  /** Oldest first. */
+  events: OrderEventItem[];
 }
 
 // ---------- dashboard (DSH-01 – DSH-04) ----------
@@ -228,6 +323,8 @@ export interface PlannerOrder {
   postcode: string;
   lat: number | null;
   lng: number | null;
+  /** 'pending' while the address is being looked up; 'failed' when it couldn't be found. */
+  geocodeStatus: GeocodeStatus;
   status: OrderStatus;
   scheduledDate: string | null;
   timeWindowStart: string | null;

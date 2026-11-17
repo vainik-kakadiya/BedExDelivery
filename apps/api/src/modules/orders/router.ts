@@ -27,7 +27,7 @@ const parseId = (raw: string | undefined): string => {
   return parsed.data;
 };
 
-export function ordersRouter({ db, env }: AppContext) {
+export function ordersRouter({ db, env, storage }: AppContext) {
   const router = Router();
   router.use(requireAuth(env.JWT_ACCESS_SECRET), requireRole('admin', 'office'));
 
@@ -94,7 +94,7 @@ export function ordersRouter({ db, env }: AppContext) {
   });
 
   router.get('/:id/history', async (req, res) => {
-    res.json(await getOrderHistory(db, parseId(req.params.id)));
+    res.json(await getOrderHistory(db, parseId(req.params.id), storage));
   });
 
   return router;

@@ -1,5 +1,5 @@
 import type { DashboardRouteRow, RouteStatus } from '@bedex/shared';
-import { ExportButtons } from '../../../components/ExportButtons';
+import { ExportMenu } from '../../../components/ExportMenu';
 import { cn } from '../../../lib/cn';
 import { relativeTime } from '../../../lib/format';
 import { useNow } from '../../../lib/hooks';
@@ -24,7 +24,8 @@ export function RoutesTable({ routes, isLoading }: { routes: DashboardRouteRow[]
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-left">
+      {/* Keep cells on one line; on narrow screens the table scrolls sideways instead of squashing. */}
+      <table className="w-full whitespace-nowrap text-left">
         <thead className="border-b border-border bg-surface text-xs uppercase tracking-wide text-slate-500">
           <tr>
             <th className="px-4 py-2.5 font-medium">Route</th>
@@ -56,7 +57,7 @@ export function RoutesTable({ routes, isLoading }: { routes: DashboardRouteRow[]
                 <td className="px-4 py-2.5">
                   <div className="flex items-center gap-2">
                     <div
-                      className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100"
+                      className="h-2 min-w-24 flex-1 overflow-hidden rounded-full bg-slate-100"
                       role="progressbar"
                       aria-valuenow={r.stopsCompleted}
                       aria-valuemax={r.stopsTotal}
@@ -74,7 +75,7 @@ export function RoutesTable({ routes, isLoading }: { routes: DashboardRouteRow[]
                 </td>
                 <td className="px-4 py-2.5 text-slate-600">{r.lastUpdateAt ? relativeTime(r.lastUpdateAt, now) : '–'}</td>
                 <td className="px-4 py-2.5">
-                  <ExportButtons size="sm" formats={['pdf', 'csv']} path={(f) => `/exports/manifest/${r.id}?format=${f}`} />
+                  <ExportMenu size="sm" formats={['pdf', 'csv']} path={(f) => `/exports/manifest/${r.id}?format=${f}`} />
                 </td>
               </tr>
             );

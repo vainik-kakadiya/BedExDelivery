@@ -7,6 +7,7 @@ import { routeColour } from './shared';
 export const MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_BROWSER_KEY;
 const MAP_ID = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID || 'DEMO_MAP_ID';
 const LONDON = { lat: 51.5072, lng: -0.1276 };
+const IS_TOUCH = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
 interface Props {
   routes: PlannerRoute[];
@@ -20,7 +21,15 @@ export function PlannerMap({ routes, unassigned, depot, highlightRouteId }: Prop
   if (!MAPS_KEY) return null;
   return (
     <APIProvider apiKey={MAPS_KEY} region="GB" language="en-GB">
-      <GoogleMap mapId={MAP_ID} defaultCenter={LONDON} defaultZoom={10} gestureHandling="greedy" clickableIcons={false} className="h-full w-full">
+      <GoogleMap
+        mapId={MAP_ID}
+        defaultCenter={LONDON}
+        defaultZoom={10}
+        // On touch screens one finger scrolls the page and two move the map; otherwise the map traps scrolling.
+        gestureHandling={IS_TOUCH ? 'cooperative' : 'greedy'}
+        clickableIcons={false}
+        className="h-full w-full"
+      >
         {depot && (
           <AdvancedMarker position={depot} title={depot.name} zIndex={1}>
             <span className="flex h-7 w-7 items-center justify-center rounded-md bg-brand-dark text-white shadow">

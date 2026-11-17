@@ -52,6 +52,8 @@ export const routeStopsRelations = relations(routeStops, ({ one }) => ({
 
 export const deliveryAttemptsRelations = relations(deliveryAttempts, ({ one, many }) => ({
   order: one(orders, { fields: [deliveryAttempts.orderId], references: [orders.id] }),
+  driver: one(drivers, { fields: [deliveryAttempts.driverId], references: [drivers.id] }),
+  route: one(routes, { fields: [deliveryAttempts.routeId], references: [routes.id] }),
   photos: many(attemptPhotos),
 }));
 

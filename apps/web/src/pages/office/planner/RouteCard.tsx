@@ -1,7 +1,7 @@
 import { ROUTE_END_TYPES, ROUTE_END_TYPE_LABELS, type PlannerRoute, type PlannerState, type RouteEndType, type RouteStatus } from '@bedex/shared';
 import { AlertTriangle, ChevronDown, ChevronUp, GripVertical, RefreshCw, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import { type CSSProperties, type DragEvent, useState } from 'react';
-import { ExportButtons } from '../../../components/ExportButtons';
+import { ExportMenu } from '../../../components/ExportMenu';
 import { cn } from '../../../lib/cn';
 import { formatMinutes } from '../../../lib/format';
 import { type DragPayload, hhmm, isOrderDrag, readDrag, startDrag } from './shared';
@@ -100,7 +100,7 @@ export function RouteCard({ route, colour, state, actions, disabled, highlighted
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid gap-2 sm:grid-cols-3">
           <select
             aria-label={`Driver for ${route.name}`}
             value={route.driverId ?? ''}
@@ -236,8 +236,15 @@ export function RouteCard({ route, colour, state, actions, disabled, highlighted
                 )}
               </div>
               {canEdit && (
+                // Bigger tap targets below lg, where drag and drop isn't available on touch screens.
                 <div className="flex shrink-0 flex-col">
-                  <button type="button" aria-label={`Move ${s.order.orderNumber} up`} disabled={i === 0} onClick={() => move(i, i - 1)} className="text-slate-400 hover:text-ink disabled:opacity-25">
+                  <button
+                    type="button"
+                    aria-label={`Move ${s.order.orderNumber} up`}
+                    disabled={i === 0}
+                    onClick={() => move(i, i - 1)}
+                    className="p-1 text-slate-400 hover:text-ink disabled:opacity-25 lg:p-0"
+                  >
                     <ChevronUp className="h-3.5 w-3.5" />
                   </button>
                   <button
@@ -245,7 +252,7 @@ export function RouteCard({ route, colour, state, actions, disabled, highlighted
                     aria-label={`Move ${s.order.orderNumber} down`}
                     disabled={i === route.stops.length - 1}
                     onClick={() => move(i, i + 1)}
-                    className="text-slate-400 hover:text-ink disabled:opacity-25"
+                    className="p-1 text-slate-400 hover:text-ink disabled:opacity-25 lg:p-0"
                   >
                     <ChevronDown className="h-3.5 w-3.5" />
                   </button>
@@ -256,7 +263,7 @@ export function RouteCard({ route, colour, state, actions, disabled, highlighted
                   type="button"
                   aria-label={`Take ${s.order.orderNumber} off ${route.name}`}
                   onClick={() => actions.setStops(route, ids.filter((id) => id !== s.order.id))}
-                  className="shrink-0 text-slate-400 hover:text-danger"
+                  className="shrink-0 p-1.5 text-slate-400 hover:text-danger lg:p-0"
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -296,7 +303,7 @@ export function RouteCard({ route, colour, state, actions, disabled, highlighted
           )}
         </div>
         {/* RTE-10 */}
-        <ExportButtons size="sm" label="Manifest" formats={['pdf', 'csv']} path={(f) => `/exports/manifest/${route.id}?format=${f}`} />
+        <ExportMenu size="sm" label="Manifest" formats={['pdf', 'csv']} path={(f) => `/exports/manifest/${route.id}?format=${f}`} />
       </footer>
     </section>
   );

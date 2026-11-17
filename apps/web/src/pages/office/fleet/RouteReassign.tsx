@@ -155,7 +155,7 @@ export function RouteReassign({ route, driverId, drivers, vans, dayRoutes, onCha
           >
             Select all outstanding ({outstanding.length})
           </button>
-          <select value={target} onChange={(e) => setTarget(e.target.value)} className="input w-80 py-1.5" aria-label="Move to route">
+          <select value={target} onChange={(e) => setTarget(e.target.value)} className="input w-full py-1.5 sm:w-80" aria-label="Move to route">
             <option value="">Move to route…</option>
             {targets.map((r) => (
               <option key={r.id} value={r.id}>

@@ -16,6 +16,7 @@ import {
   ORDER_STATUS_META,
   type OptimiseRequest,
   type OptimiseSkipped,
+  type GeocodeStatus,
   type OrderStatus,
   type PlannerOrder,
   type PlannerRoute,
@@ -69,6 +70,7 @@ const plannerOrderColumns = {
   postcode: orders.postcode,
   lat: orders.lat,
   lng: orders.lng,
+  geocodeStatus: orders.geocodeStatus,
   status: orders.status,
   scheduledDate: orders.scheduledDate,
   timeWindowStart: orders.timeWindowStart,
@@ -89,6 +91,7 @@ type PlannerOrderRow = { [K in keyof typeof plannerOrderColumns]: unknown } & {
   postcode: string;
   lat: number | null;
   lng: number | null;
+  geocodeStatus: GeocodeStatus;
   status: OrderStatus;
   scheduledDate: string | null;
   timeWindowStart: string | null;
@@ -111,6 +114,7 @@ function toPlannerOrder(o: PlannerOrderRow): PlannerOrder {
     postcode: o.postcode,
     lat: o.lat,
     lng: o.lng,
+    geocodeStatus: o.geocodeStatus,
     status: o.status,
     scheduledDate: o.scheduledDate,
     timeWindowStart: o.timeWindowStart?.slice(0, 5) ?? null,

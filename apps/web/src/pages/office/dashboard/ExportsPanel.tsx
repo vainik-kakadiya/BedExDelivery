@@ -2,7 +2,7 @@ import { ATTEMPT_OUTCOMES, type DriverOption } from '@bedex/shared';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ExportButtons } from '../../../components/ExportButtons';
+import { ExportMenu } from '../../../components/ExportMenu';
 import { api } from '../../../lib/api';
 
 const OUTCOME_LABELS = { delivered: 'Delivered', partial: 'Partially delivered', failed: 'Failed' } as const;
@@ -56,7 +56,7 @@ export function ExportsPanel({ date }: { date: string }) {
             </select>
           </label>
         </div>
-        <ExportButtons className="mt-3" path={(f) => `/exports/deliveries?${params}&format=${f}`} />
+        <ExportMenu className="mt-3" path={(f) => `/exports/deliveries?${params}&format=${f}`} />
       </div>
 
       <div className="border-t border-border pt-4 text-slate-600">

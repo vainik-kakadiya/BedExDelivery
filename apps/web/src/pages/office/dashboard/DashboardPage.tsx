@@ -13,7 +13,7 @@ import { SummaryCards } from './SummaryCards';
 
 function Panel({ id, title, aside, children }: { id?: string; title: ReactNode; aside?: ReactNode; children: ReactNode }) {
   return (
-    <section id={id} className="card scroll-mt-6">
+    <section id={id} className="card scroll-mt-20 lg:scroll-mt-6">
       <header className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
         <h2 className="font-semibold">{title}</h2>
         {aside}
@@ -67,9 +67,9 @@ export function DashboardPage() {
           <h1 className="text-xl font-semibold">Dashboard</h1>
           <p className="text-slate-500">{isToday ? `Today · ${formatUkDate(date)}` : formatUkDate(date)}</p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           {/* DSH-05: global search → Orders page with full filters */}
-          <form onSubmit={onSearch} className="relative" role="search">
+          <form onSubmit={onSearch} className="relative w-full sm:w-auto" role="search">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden />
             <input
               type="search"
@@ -77,7 +77,7 @@ export function DashboardPage() {
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search orders, refs, postcodes…"
               aria-label="Search all orders"
-              className="input w-72 pl-9"
+              className="input w-full pl-9 sm:w-72"
             />
           </form>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} aria-label="Dashboard date" className="input w-auto" />
@@ -98,12 +98,13 @@ export function DashboardPage() {
       <SummaryCards cards={summary.data?.cards} date={date} isToday={isToday} />
 
       <div className="grid gap-5 2xl:grid-cols-5">
-        <div className="2xl:col-span-3">
+        {/* min-w-0 lets the column shrink to the screen so the table scrolls inside it instead of widening the page. */}
+        <div className="min-w-0 2xl:col-span-3">
           <Panel id="routes" title={isToday ? "Today's routes" : 'Routes'}>
             <RoutesTable routes={summary.data?.routes} isLoading={summary.isPending} />
           </Panel>
         </div>
-        <div className="2xl:col-span-2">
+        <div className="min-w-0 2xl:col-span-2">
           <Panel
             title="Live map"
             aside={

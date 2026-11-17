@@ -1,0 +1,54 @@
+# Production stack. Reads settings from .env next to this file.
+#   docker compose up -d --build                     start / update
+#   docker compose run --rm tools pnpm db:migrate    apply database migrations
+#   docker compose logs -f api                       API logs
+name: bedex
+
+services:
+  api:
+    build:
+      context: .
+      target: api
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: "4000"
+      CORS_ORIGIN: ${PUBLIC_URL:?Set PUBLIC_URL in .env, e.g. https://delivery.example.com}
+      COOKIE_SECURE: "true"
+      # Caddy is the one proxy in front of the API.
+      TRUST_PROXY: "1"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+      args:
+        VITE_GOOGLE_MAPS_BROWSER_KEY: ${VITE_GOOGLE_MAPS_BROWSER_KEY:-}
+        VITE_GOOGLE_MAPS_MAP_ID: ${VITE_GOOGLE_MAPS_MAP_ID:-}
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      # Keeps the HTTPS certificate across restarts (avoids Let's Encrypt rate limits).
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # One-off jobs: migrations and seeds. Not started by `up`.
+  tools:
+    build:
+      context: .
+      target: tools
+    env_file: .env
+    profiles: ["tools"]
+
+volumes:
+  caddy_data:
+  caddy_config:

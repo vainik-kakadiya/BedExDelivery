@@ -22,6 +22,33 @@ pnpm dev                      # API :4000, web :5173 (proxies /api)
 | `pnpm db:seed:demo` | Demo depot, vans, drivers, routes and orders timed around "now". `--reset` removes them |
 | `pnpm db:studio` | Drizzle Studio |
 
+## Deploy with Docker
+
+Step-by-step for a Google Cloud VM, including running without a domain: [deploy/google-cloud.md](deploy/google-cloud.md).
+
+`docker-compose.yml` runs two containers: `api` (Node) and `web` ([Caddy](https://caddyserver.com): serves the web app, proxies `/api`, gets and renews the HTTPS certificate). The database and photo storage stay on Supabase.
+
+HTTPS is required: refresh cookies are `Secure` in production, and the driver app needs it for the camera and offline mode. So you need a domain (or subdomain) with an `A` record pointing at the server. Without one, use `https://<ip-with-dashes>.sslip.io`; `deploy/setup-server.sh` sets that up.
+
+On the server (Docker Engine with the compose plugin):
+
+```sh
+git clone <repo> bedex && cd bedex
+cp .env.example .env        # then fill it in, see below
+docker compose up -d --build
+docker compose run --rm tools pnpm db:migrate   # first deploy, and after pulling new migrations
+docker compose run --rm tools pnpm db:seed      # first deploy only: creates the admin login
+```
+
+In `.env`, on top of the usual values:
+
+- `PUBLIC_URL=https://delivery.example.com`: the address people open. Caddy uses it for the certificate, and the API uses it as the CORS origin.
+- `DATABASE_URL`: use Supabase's **session** pooler (port 5432) or the direct connection, not the transaction pooler (6543). Live updates use `LISTEN`.
+- `NODE_ENV`, `COOKIE_SECURE`, `CORS_ORIGIN` and `TRUST_PROXY` are set by `docker-compose.yml`; values in `.env` are ignored.
+- `VITE_*` values are built into the web app, so run `docker compose up -d --build` after changing them.
+
+Ports 80 and 443 must be reachable from the internet; Let's Encrypt checks port 80. Update with `git pull && docker compose up -d --build`. Logs: `docker compose logs -f api`.
+
 ## Layout
 
 ```

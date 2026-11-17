@@ -17,6 +17,7 @@ import {
   type OrderDeleteInput,
   type OrderDeleteResult,
   type OrderListItem,
+  type OrderHistory,
   type OrderListQuery,
   type OrderStatus,
   type OrderStatusChangeInput,
@@ -32,6 +33,7 @@ import {
 import { type SQL, and, asc, desc, eq, ilike, inArray, like, lt, or, sql } from 'drizzle-orm';
 import { AppError, badRequest, conflict, notFound } from '../../lib/errors';
 import type { AuthUser } from '../../lib/jwt';
+import type { PhotoStorage } from '../../lib/storage';
 
 export type OrderRow = typeof orders.$inferSelect;
 type OrderPatch = Partial<typeof orders.$inferInsert>;
@@ -108,11 +110,18 @@ export async function getOrder(db: Db, id: string) {
   return order;
 }
 
-export async function getOrderHistory(db: Db, id: string) {
-  const exists = await db.select({ id: orders.id }).from(orders).where(eq(orders.id, id)).limit(1);
-  if (exists.length === 0) throw notFound('Order not found');
+/** How long the office's photo links stay valid. The page refetches before they expire. */
+const PHOTO_LINK_SECONDS = 15 * 60;
 
-  const [events, attempts] = await Promise.all([
+/**
+ * HST-01 – HST-03: what happened to an order — the route it's on, every delivery
+ * attempt (driver, recipient, proof photos as short-lived links) and the event log.
+ */
+export async function getOrderHistory(db: Db, id: string, storage: PhotoStorage | null): Promise<OrderHistory> {
+  const order = await db.query.orders.findFirst({ where: eq(orders.id, id), columns: { id: true, currentRouteId: true } });
+  if (!order) throw notFound('Order not found');
+
+  const [events, attempts, route] = await Promise.all([
     db
       .select({
         id: orderEvents.id,
@@ -133,12 +142,77 @@ export async function getOrderHistory(db: Db, id: string) {
       .orderBy(asc(orderEvents.createdAt)),
     db.query.deliveryAttempts.findMany({
       where: eq(deliveryAttempts.orderId, id),
-      orderBy: (a, { asc }) => [asc(a.attemptNo)],
-      with: { photos: true },
+      orderBy: (a, { desc }) => [desc(a.attemptNo)],
+      with: {
+        photos: { orderBy: (p, { asc }) => [asc(p.createdAt)] },
+        driver: { columns: {}, with: { user: { columns: { name: true } } } },
+        route: { columns: { name: true, date: true } },
+      },
     }),
+    order.currentRouteId
+      ? db.query.routes.findFirst({
+          where: eq(routes.id, order.currentRouteId),
+          columns: { id: true, name: true, date: true, status: true },
+          with: {
+            driver: { columns: {}, with: { user: { columns: { name: true } } } },
+            van: { columns: { name: true, registration: true } },
+          },
+        })
+      : undefined,
   ]);
-  // TODO(HST-03): replace photo storage paths with short-lived signed URLs.
-  return { events, attempts };
+
+  // A missing file or storage outage shouldn't hide the rest of the history.
+  const link = async (path: string) => {
+    if (!storage) return null;
+    try {
+      return await storage.signedUrl(path, PHOTO_LINK_SECONDS);
+    } catch {
+      return null;
+    }
+  };
+
+  return {
+    route: route
+      ? {
+          id: route.id,
+          name: route.name,
+          date: route.date,
+          status: route.status,
+          driverName: route.driver?.user.name ?? null,
+          vanName: route.van?.name ?? null,
+          vanRegistration: route.van?.registration ?? null,
+        }
+      : null,
+    attempts: await Promise.all(
+      attempts.map(async (a) => ({
+        id: a.id,
+        attemptNo: a.attemptNo,
+        outcome: a.outcome,
+        failureReason: a.failureReason,
+        recipientName: a.recipientName,
+        leftAtType: a.leftAtType,
+        leftAtNote: a.leftAtNote,
+        notes: a.notes,
+        occurredAt: a.occurredAt.toISOString(),
+        driverName: a.driver?.user.name ?? null,
+        routeName: a.route?.name ?? null,
+        routeDate: a.route?.date ?? null,
+        photos: await Promise.all(
+          a.photos.map(async (p) => ({ id: p.id, type: p.type, url: await link(p.storagePath), takenAt: p.takenAt?.toISOString() ?? null })),
+        ),
+      })),
+    ),
+    events: events.map((e) => ({
+      id: e.id,
+      type: e.type,
+      fromStatus: e.fromStatus,
+      toStatus: e.toStatus,
+      note: e.note,
+      createdAt: e.createdAt.toISOString(),
+      actorName: e.actorName,
+      actorRole: e.actorRole,
+    })),
+  };
 }
 
 export type OrderFilters = Omit<OrderListQuery, 'cursor' | 'limit'>;

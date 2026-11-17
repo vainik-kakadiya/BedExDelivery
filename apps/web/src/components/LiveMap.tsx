@@ -27,7 +27,7 @@ export function LiveMap({ data }: { data: DashboardLive | undefined }) {
 
   return (
     <APIProvider apiKey={API_KEY} region="GB" language="en-GB">
-      <div className="h-[420px] overflow-hidden rounded-b-lg">
+      <div className="h-[320px] overflow-hidden rounded-b-lg sm:h-[420px]">
         <GoogleMap mapId={MAP_ID} defaultCenter={LONDON} defaultZoom={10} gestureHandling="cooperative" clickableIcons={false}>
           {data?.depots.map((d) => (
             <AdvancedMarker key={d.id} position={d} title={d.name} zIndex={1}>

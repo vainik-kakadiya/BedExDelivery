@@ -11,13 +11,14 @@ import {
   formatUkDate,
 } from '@bedex/shared';
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, Trash2, Upload, X } from 'lucide-react';
+import { Search, SlidersHorizontal, Trash2, Upload, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { confirmDialog } from '../../components/ConfirmDialog';
-import { ExportButtons } from '../../components/ExportButtons';
+import { ExportMenu } from '../../components/ExportMenu';
 import { StatusBadge } from '../../components/StatusBadge';
 import { ApiError, api } from '../../lib/api';
+import { cn } from '../../lib/cn';
 import { useDebounced } from '../../lib/hooks';
 
 const FILTER_KEYS = ['q', 'status', 'date', 'driverId', 'routeId', 'postcodePrefix', 'source'] as const;
@@ -35,6 +36,7 @@ const canDelete = (o: OrderListItem) => DELETABLE_ORDER_STATUSES.includes(o.stat
 /** ORD-03/04 + DSH-05: search and filters, kept in the URL so views can be linked and shared. */
 export function OrdersPage() {
   const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
   const filters = Object.fromEntries(FILTER_KEYS.map((k) => [k, params.get(k) ?? ''])) as Record<FilterKey, string>;
 
   // The search box is typed into locally and pushed to the URL after a pause.
@@ -61,6 +63,9 @@ export function OrdersPage() {
   for (const k of FILTER_KEYS) if (filters[k]) query.set(k, filters[k]);
   const queryString = query.toString();
   const activeCount = FILTER_KEYS.filter((k) => filters[k]).length;
+  /** Active filters other than the search box, which is always visible. */
+  const filterCount = FILTER_KEYS.filter((k) => k !== 'q' && filters[k]).length;
+  const [showFilters, setShowFilters] = useState(false);
 
   const orders = useInfiniteQuery({
     queryKey: ['orders', queryString],
@@ -134,12 +139,13 @@ export function OrdersPage() {
     filters.status && !ORDER_STATUSES.includes(filters.status as never) && !STATUS_GROUPS.some((g) => g.value === filters.status);
 
   return (
-    // Fill the viewport (minus <main>'s 24px padding top and bottom) so only the table scrolls.
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
+    // On desktop, fill the viewport (minus <main>'s 24px padding top and bottom) so only the table scrolls.
+    // On small screens the page scrolls normally.
+    <div className="flex flex-col lg:h-[calc(100dvh-3rem)]">
       <div className="mb-4 flex shrink-0 flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Orders</h1>
         <div className="flex flex-wrap items-center gap-3">
-          <ExportButtons label="Export" path={(f) => `/exports/orders?${queryString}${queryString ? '&' : ''}format=${f}`} />
+          <ExportMenu path={(f) => `/exports/orders?${queryString}${queryString ? '&' : ''}format=${f}`} />
           <Link to="/office/orders/import" className="btn-primary px-3 py-1.5">
             <Upload className="h-4 w-4" aria-hidden />
             Import orders
@@ -148,17 +154,31 @@ export function OrdersPage() {
       </div>
 
       <div className="card mb-4 grid shrink-0 gap-3 p-3 md:grid-cols-2 xl:grid-cols-6">
-        <div className="relative md:col-span-2">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden />
-          <input
-            type="search"
-            aria-label="Search orders"
-            placeholder="Order no., tracking ref, name, postcode, address, phone"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="input pl-9"
-          />
+        <div className="flex gap-2 md:col-span-2">
+          <div className="relative min-w-0 flex-1">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden />
+            <input
+              type="search"
+              aria-label="Search orders"
+              placeholder="Order no., tracking ref, name, postcode, address, phone"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="input pl-9"
+            />
+          </div>
+          {/* Phones: the filters fold away behind this button. */}
+          <button
+            type="button"
+            className="btn-secondary shrink-0 px-3 md:hidden"
+            aria-expanded={showFilters}
+            aria-controls="order-filters"
+            onClick={() => setShowFilters((v) => !v)}
+          >
+            <SlidersHorizontal className="h-4 w-4" aria-hidden />
+            Filters{filterCount > 0 && ` (${filterCount})`}
+          </button>
         </div>
+        <div id="order-filters" className={cn('md:contents', showFilters ? 'grid gap-3' : 'hidden')}>
         <select aria-label="Filter by status" value={filters.status} onChange={(e) => setFilter('status', e.target.value)} className="input">
           <option value="">All statuses</option>
           <optgroup label="Groups">
@@ -236,6 +256,7 @@ export function OrdersPage() {
             Clear filters ({activeCount})
           </button>
         )}
+        </div>
       </div>
 
       {deleteResult && (
@@ -279,7 +300,7 @@ export function OrdersPage() {
         </div>
       )}
 
-      <div className="card min-h-[300px] flex-1 overflow-auto" aria-label="Orders" tabIndex={0}>
+      <div className="card relative min-h-[300px] flex-1 overflow-auto" aria-label="Orders" tabIndex={0}>
         <table className="w-full text-left">
           {/* Sticky header; a shadow stands in for the border, which wouldn't stick with collapsed borders. */}
           <thead className="sticky top-0 z-10 bg-surface text-xs uppercase tracking-wide text-slate-500 shadow-[0_1px_0_0_rgb(var(--border))]">
@@ -296,12 +317,12 @@ export function OrdersPage() {
                 />
               </th>
               <th className="px-4 py-2.5 font-medium">Order</th>
-              <th className="px-4 py-2.5 font-medium">Tracking ref</th>
+              <th className="hidden px-4 py-2.5 font-medium md:table-cell">Tracking ref</th>
               <th className="px-4 py-2.5 font-medium">Customer</th>
-              <th className="px-4 py-2.5 font-medium">Postcode</th>
+              <th className="hidden px-4 py-2.5 font-medium sm:table-cell">Postcode</th>
               <th className="px-4 py-2.5 font-medium">Status</th>
               <th className="px-4 py-2.5 font-medium">Date</th>
-              <th className="px-4 py-2.5 font-medium">Source</th>
+              <th className="hidden px-4 py-2.5 font-medium md:table-cell">Source</th>
               <th className="w-12 px-2 py-2.5">
                 <span className="sr-only">Actions</span>
               </th>
@@ -309,8 +330,15 @@ export function OrdersPage() {
           </thead>
           <tbody className="divide-y divide-border">
             {rows.map((o) => (
-              <tr key={o.id} className={selected.has(o.id) ? 'bg-brand-primary/5' : 'hover:bg-surface'}>
-                <td className="py-2.5 pl-4">
+              <tr
+                key={o.id}
+                className={cn('cursor-pointer', selected.has(o.id) ? 'bg-brand-primary/5' : 'hover:bg-surface')}
+                // Whole row opens the order; the checkbox, delete button and link handle their own clicks.
+                onClick={(e) => {
+                  if (!(e.target as HTMLElement).closest('a, button, input, label')) navigate(`/office/orders/${o.id}`);
+                }}
+              >
+                <td className="py-2.5 pl-4" onClick={(e) => e.stopPropagation()}>
                   <input
                     type="checkbox"
                     aria-label={`Select order ${o.orderNumber}`}
@@ -321,19 +349,27 @@ export function OrdersPage() {
                     className="h-4 w-4 accent-brand-primary disabled:opacity-30"
                   />
                 </td>
-                <td className="px-4 py-2.5 font-medium">{o.orderNumber}</td>
-                <td className="px-4 py-2.5 font-mono text-xs">{o.trackingRef}</td>
+                <td className="px-4 py-2.5 font-medium">
+                  <Link to={`/office/orders/${o.id}`} className="text-brand-primary hover:underline">
+                    {o.orderNumber}
+                  </Link>
+                </td>
+                <td className="hidden px-4 py-2.5 font-mono text-xs md:table-cell">{o.trackingRef}</td>
                 <td className="px-4 py-2.5">
                   {o.customerName}
-                  <span className="block text-xs text-slate-500">{o.town}</span>
+                  <span className="block text-xs text-slate-500">
+                    {o.town}
+                    {/* The postcode column is hidden on phones. */}
+                    <span className="sm:hidden"> · {o.postcode}</span>
+                  </span>
                 </td>
-                <td className="px-4 py-2.5">{o.postcode}</td>
+                <td className="hidden px-4 py-2.5 sm:table-cell">{o.postcode}</td>
                 <td className="px-4 py-2.5">
                   <StatusBadge status={o.status} />
                 </td>
                 <td className="px-4 py-2.5">{o.scheduledDate ? formatUkDate(o.scheduledDate) : '–'}</td>
-                <td className="px-4 py-2.5 capitalize text-slate-600">{o.source}</td>
-                <td className="px-2 py-1.5 text-right">
+                <td className="hidden px-4 py-2.5 capitalize text-slate-600 md:table-cell">{o.source}</td>
+                <td className="px-2 py-1.5 text-right" onClick={(e) => e.stopPropagation()}>
                   {canDelete(o) && (
                     <button
                       type="button"

@@ -1,5 +1,5 @@
 import type { PlannerOrder, PlannerRoute } from '@bedex/shared';
-import { GripVertical, Inbox, MapPinOff } from 'lucide-react';
+import { GripVertical, Inbox, Loader2, MapPinOff } from 'lucide-react';
 import { useState } from 'react';
 import { StatusBadge } from '../../../components/StatusBadge';
 import { cn } from '../../../lib/cn';
@@ -15,10 +15,12 @@ interface Props {
   onDropFromRoute: (payload: DragPayload) => void;
   onAddToRoute: (orderId: string, routeId: string) => void;
   disabled: boolean;
+  /** Whether the API is looking up addresses (needs GOOGLE_MAPS_SERVER_KEY). */
+  geocoding: boolean;
 }
 
 /** RTE-01: eligible orders not yet on a route. Ticked ones go into the next optimisation. */
-export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAll, onDropFromRoute, onAddToRoute, disabled }: Props) {
+export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAll, onDropFromRoute, onAddToRoute, disabled, geocoding }: Props) {
   const [over, setOver] = useState(false);
   const editable = routes.filter((r) => r.editable);
   const plannable = orders.filter((o) => o.lat !== null && o.lng !== null);
@@ -90,12 +92,23 @@ export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAl
                   <p className="text-xs text-slate-500">
                     {o.postcode}
                     {o.timeWindowStart && ` · ${o.timeWindowStart}–${o.timeWindowEnd}`} · {o.loadUnits} units · {o.serviceMinutes} min
-                    {!located && (
-                      <span className="ml-1 inline-flex items-center gap-1 font-medium text-danger">
-                        <MapPinOff className="h-3 w-3" aria-hidden />
-                        No map location
-                      </span>
-                    )}
+                    {!located &&
+                      (!geocoding ? (
+                        <span className="ml-1 inline-flex items-center gap-1 font-medium text-danger" title="Set GOOGLE_MAPS_SERVER_KEY so addresses can be found on the map">
+                          <MapPinOff className="h-3 w-3" aria-hidden />
+                          No map location – address lookup not set up
+                        </span>
+                      ) : o.geocodeStatus === 'pending' ? (
+                        <span className="ml-1 inline-flex items-center gap-1 font-medium text-slate-500" title="The address is being looked up on the map">
+                          <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+                          Finding location…
+                        </span>
+                      ) : (
+                        <span className="ml-1 inline-flex items-center gap-1 font-medium text-danger" title="The map couldn't find this address. Check the address and postcode on the order.">
+                          <MapPinOff className="h-3 w-3" aria-hidden />
+                          Address not found – check it
+                        </span>
+                      ))}
                   </p>
                 </div>
                 {editable.length > 0 && (

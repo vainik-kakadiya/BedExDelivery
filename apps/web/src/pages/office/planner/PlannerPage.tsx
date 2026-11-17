@@ -282,7 +282,8 @@ export function PlannerPage() {
   ));
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col gap-3">
+    // Desktop: fill the viewport with independently scrolling columns. Small screens: normal page scroll.
+    <div className="flex flex-col gap-3 lg:h-[calc(100dvh-3rem)]">
       {/* Toolbar */}
       <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
@@ -410,14 +411,18 @@ export function PlannerPage() {
       {plan.isPending && <p className="p-6 text-center text-slate-500">Loading plan…</p>}
 
       {state && (
-        <div className={cn('grid min-h-0 flex-1 gap-3', MAPS_KEY ? 'lg:grid-cols-[minmax(440px,5fr)_7fr]' : 'lg:grid-cols-[minmax(360px,2fr)_5fr]')}>
-          <div className="min-h-0 space-y-3 overflow-y-auto pb-2 pr-1">
+        <div className={cn('grid min-h-0 flex-1 grid-cols-1 gap-3', MAPS_KEY ? 'lg:grid-cols-[minmax(440px,5fr)_7fr]' : 'lg:grid-cols-[minmax(360px,2fr)_5fr]')}>
+          {/* `relative` makes this the containing block for absolutely positioned children (e.g. sr-only
+              labels in route cards); otherwise they escape the scroll area and stretch the whole page. */}
+          <div className="relative min-h-0 space-y-3 pb-2 lg:overflow-y-auto lg:pr-1">
             <VehiclesPanel state={state} value={vehicles} onChange={setVehicles} />
             <UnassignedPanel
               orders={state.unassigned}
               routes={state.routes}
               excluded={excluded}
               disabled={disabled}
+              // The API geocodes with the same Google key that turns on Google travel times.
+              geocoding={state.engines.travel === 'google'}
               onToggle={(id, include) =>
                 setExcluded((prev) => {
                   const next = new Set(prev);
@@ -434,11 +439,12 @@ export function PlannerPage() {
           </div>
 
           {MAPS_KEY ? (
-            <div className="card min-h-[360px] overflow-hidden">
+            // Phones/tablets: a fixed-height map above the lists. Desktop: the right-hand column.
+            <div className="card h-[50vh] min-h-[300px] overflow-hidden max-lg:order-first lg:h-auto lg:min-h-[360px]">
               <PlannerMap routes={state.routes} unassigned={state.unassigned} depot={depot} highlightRouteId={highlight} />
             </div>
           ) : (
-            <div className="min-h-0 overflow-y-auto pb-2 pr-1">
+            <div className="relative min-h-0 pb-2 lg:overflow-y-auto lg:pr-1">
               <p className="mb-3 flex items-center gap-2 rounded-md bg-surface px-3 py-2 text-xs text-slate-500">
                 <MapPinOff className="h-4 w-4 shrink-0" aria-hidden />
                 Map not configured – set <code>VITE_GOOGLE_MAPS_BROWSER_KEY</code> in <code>.env</code> to see routes on a map.

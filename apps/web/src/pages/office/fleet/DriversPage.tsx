@@ -78,7 +78,7 @@ export function DriversPage() {
           <h1 className="text-xl font-semibold">Drivers</h1>
           <p className="text-slate-500">Progress for {date === today ? `today · ${formatUkDate(date)}` : formatUkDate(date)}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <input
             type="date"
             aria-label="Progress date"

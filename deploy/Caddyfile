@@ -1,0 +1,27 @@
+# PUBLIC_URL is the address people open, e.g. https://delivery.example.com
+# or https://34-89-12-7.sslip.io. Caddy gets and renews its HTTPS certificate
+# by itself as long as ports 80 and 443 reach this server.
+{$PUBLIC_URL} {
+	encode zstd gzip
+
+	# API, including the live-update streams (flush immediately for SSE).
+	handle /api/* {
+		reverse_proxy api:4000 {
+			flush_interval -1
+		}
+	}
+
+	# Web app: real files, otherwise index.html so client-side routes work on reload.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Hashed build assets never change; everything else (index.html, sw.js) must revalidate
+	# so new releases reach users and installed driver apps.
+	@hashed path /assets/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+	@html not path /assets/*
+	header @html Cache-Control "no-cache"
+}

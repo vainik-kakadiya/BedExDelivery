@@ -2,6 +2,7 @@ import { type ActionQueueItem, FAILURE_REASON_LABELS, type OrderStatusChangeInpu
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { CalendarClock, CircleCheck, Undo2, X } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { StatusBadge } from '../../../components/StatusBadge';
 import { ApiError, api } from '../../../lib/api';
 import { addDays, londonDateTime } from '../../../lib/format';
@@ -61,7 +62,9 @@ function QueueRow({ item }: { item: ActionQueueItem }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold">{item.orderNumber}</span>
+            <Link to={`/office/orders/${item.orderId}`} className="font-semibold text-brand-primary hover:underline">
+              {item.orderNumber}
+            </Link>
             <StatusBadge status={item.status} />
           </div>
           <p className="text-slate-600">
