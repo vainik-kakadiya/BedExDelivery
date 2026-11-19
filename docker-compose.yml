@@ -13,7 +13,7 @@ services:
     environment:
       NODE_ENV: production
       PORT: "4000"
-      CORS_ORIGIN: ${PUBLIC_URL:?Set PUBLIC_URL in .env, e.g. https://delivery.example.com}
+      CORS_ORIGIN: ${PUBLIC_URL:?Set PUBLIC_URL in .env, e.g. https://portal.bedfleet.co.uk}
       COOKIE_SECURE: "true"
       # Caddy is the one proxy in front of the API.
       TRUST_PROXY: "1"

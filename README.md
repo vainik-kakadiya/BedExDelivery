@@ -42,7 +42,7 @@ docker compose run --rm tools pnpm db:seed      # first deploy only: creates the
 
 In `.env`, on top of the usual values:
 
-- `PUBLIC_URL=https://delivery.example.com`: the address people open. Caddy uses it for the certificate, and the API uses it as the CORS origin.
+- `PUBLIC_URL=https://portal.bedfleet.co.uk`: the address people open. Caddy uses it for the certificate, and the API uses it as the CORS origin.
 - `DATABASE_URL`: use Supabase's **session** pooler (port 5432) or the direct connection, not the transaction pooler (6543). Live updates use `LISTEN`.
 - `NODE_ENV`, `COOKIE_SECURE`, `CORS_ORIGIN` and `TRUST_PROXY` are set by `docker-compose.yml`; values in `.env` are ignored.
 - `VITE_*` values are built into the web app, so run `docker compose up -d --build` after changing them.

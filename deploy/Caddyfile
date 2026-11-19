@@ -1,4 +1,4 @@
-# PUBLIC_URL is the address people open, e.g. https://delivery.example.com
+# PUBLIC_URL is the address people open, e.g. https://portal.bedfleet.co.uk
 # or https://34-89-12-7.sslip.io. Caddy gets and renews its HTTPS certificate
 # by itself as long as ports 80 and 443 reach this server.
 {$PUBLIC_URL} {

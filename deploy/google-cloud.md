@@ -108,7 +108,7 @@ The containers restart on their own after a crash or VM reboot.
 ## Later: switching to a real domain
 
 1. Add an `A` record for, say, `delivery.example.com` pointing at the VM's static IP.
-2. In `~/bedex/.env`, set `PUBLIC_URL=https://delivery.example.com`.
+2. In `~/bedex/.env`, set `PUBLIC_URL=https://portal.bedfleet.co.uk`.
 3. `docker compose up -d`, and update the browser key's website restriction.
 
 Drivers who installed the app from the old address need to open the new one and install again.
