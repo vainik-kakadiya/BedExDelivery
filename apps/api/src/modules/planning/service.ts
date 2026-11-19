@@ -26,11 +26,13 @@ import {
   type RouteUpdateInput,
   type RouteWarning,
   type RoutingEngineKind,
+  type VanDeactivateInput,
+  type VanImpact,
   checkTransition,
   londonToUtc,
   metresToMiles,
 } from '@bedex/shared';
-import { type SQL, and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
+import { type SQL, and, asc, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { AppError, badRequest, conflict, notFound } from '../../lib/errors';
 import type { AuthUser } from '../../lib/jwt';
 import { getSettings } from '../settings/service';
@@ -944,59 +946,65 @@ export async function transferStops(
     // Lock in a fixed order so two opposite transfers can't deadlock.
     const [a, b] = [fromRouteId, toRouteId].sort();
     const locked = new Map([[a!, await lockRoute(tx, a!)], [b!, await lockRoute(tx, b!)]]);
-    const from = locked.get(fromRouteId)!;
-    const to = locked.get(toRouteId)!;
-    if (from.date !== to.date) throw conflict('WRONG_DATE', 'Stops can only move to a route on the same day');
-    for (const r of [from, to]) {
-      if (r.status === 'completed') throw conflict('ROUTE_LOCKED', `${r.name} has been completed`);
-    }
-
-    const stops = await tx
-      .select({ orderId: routeStops.orderId, completedAt: routeStops.completedAt, status: orders.status, number: orders.orderNumber })
-      .from(routeStops)
-      .innerJoin(orders, eq(orders.id, routeStops.orderId))
-      .where(and(eq(routeStops.routeId, fromRouteId), inArray(routeStops.orderId, orderIds)));
-    if (stops.length !== orderIds.length) throw badRequest(`Some of those orders are not on ${from.name}`);
-    const done = stops.filter((s) => s.completedAt);
-    if (done.length) throw conflict('STOP_COMPLETED', `Already completed: ${done.map((s) => s.number).join(', ')}`);
-    const outForDelivery = stops.filter((s) => s.status === 'out_for_delivery');
-    if (outForDelivery.length && to.status === 'draft') {
-      throw conflict('ROUTE_NOT_RELEASED', `${outForDelivery.map((s) => s.number).join(', ')} ${outForDelivery.length > 1 ? 'are' : 'is'} already out for delivery – move to a released or in-progress route`);
-    }
-
-    const driverIds = [from.driverId, to.driverId].filter((x): x is string => !!x);
-    const [[{ next } = { next: 0 }], driverNames] = await Promise.all([
-      tx
-        .select({ next: sql<number>`coalesce(max(${routeStops.sequence}), 0)`.mapWith(Number) })
-        .from(routeStops)
-        .where(eq(routeStops.routeId, toRouteId)),
-      driverIds.length
-        ? tx.select({ id: drivers.id, name: users.name }).from(drivers).innerJoin(users, eq(users.id, drivers.userId)).where(inArray(drivers.id, driverIds))
-        : [],
-    ]);
-    await tx.delete(routeStops).where(and(eq(routeStops.routeId, fromRouteId), inArray(routeStops.orderId, orderIds)));
-    const nameOf = (id: string | null) => driverNames.find((d) => d.id === id)?.name ?? null;
-    const changed = [from, to].filter((r) => r.status !== 'draft').map((r) => r.id);
-    await Promise.all([
-      tx.insert(routeStops).values(orderIds.map((orderId, i) => ({ routeId: toRouteId, orderId, sequence: next + i + 1 }))),
-      resequence(tx, [fromRouteId]),
-      tx.update(orders).set({ currentRouteId: toRouteId }).where(inArray(orders.id, orderIds)),
-      insertEvents(
-        tx,
-        orderIds.map((orderId) =>
-          eventRow(actor, orderId, 'route_changed', toRouteId, {
-            from: from.name,
-            to: to.name,
-            fromDriver: nameOf(from.driverId),
-            toDriver: nameOf(to.driverId),
-          }),
-        ),
-      ),
-      changed.length && tx.update(routes).set({ changedAt: new Date() }).where(inArray(routes.id, changed)),
-      audit(tx, actor, 'stops_transferred', fromRouteId, { to: toRouteId, orderIds }),
-    ]);
+    await moveStops(tx, locked.get(fromRouteId)!, locked.get(toRouteId)!, orderIds, actor);
   });
   await Promise.all([recalculateRoute(ctx, fromRouteId), recalculateRoute(ctx, toRouteId)]);
+}
+
+/** transferStops() on routes the caller has already locked. The caller recalculates both. */
+async function moveStops(tx: Tx, from: RouteRow, to: RouteRow, orderIds: string[], actor: AuthUser, note?: string): Promise<void> {
+  const fromRouteId = from.id;
+  const toRouteId = to.id;
+  if (from.date !== to.date) throw conflict('WRONG_DATE', 'Stops can only move to a route on the same day');
+  for (const r of [from, to]) {
+    if (r.status === 'completed') throw conflict('ROUTE_LOCKED', `${r.name} has been completed`);
+  }
+
+  const stops = await tx
+    .select({ orderId: routeStops.orderId, completedAt: routeStops.completedAt, status: orders.status, number: orders.orderNumber })
+    .from(routeStops)
+    .innerJoin(orders, eq(orders.id, routeStops.orderId))
+    .where(and(eq(routeStops.routeId, fromRouteId), inArray(routeStops.orderId, orderIds)));
+  if (stops.length !== orderIds.length) throw badRequest(`Some of those orders are not on ${from.name}`);
+  const done = stops.filter((s) => s.completedAt);
+  if (done.length) throw conflict('STOP_COMPLETED', `Already completed: ${done.map((s) => s.number).join(', ')}`);
+  const outForDelivery = stops.filter((s) => s.status === 'out_for_delivery');
+  if (outForDelivery.length && to.status === 'draft') {
+    throw conflict('ROUTE_NOT_RELEASED', `${outForDelivery.map((s) => s.number).join(', ')} ${outForDelivery.length > 1 ? 'are' : 'is'} already out for delivery – move to a released or in-progress route`);
+  }
+
+  const driverIds = [from.driverId, to.driverId].filter((x): x is string => !!x);
+  const [[{ next } = { next: 0 }], driverNames] = await Promise.all([
+    tx
+      .select({ next: sql<number>`coalesce(max(${routeStops.sequence}), 0)`.mapWith(Number) })
+      .from(routeStops)
+      .where(eq(routeStops.routeId, toRouteId)),
+    driverIds.length
+      ? tx.select({ id: drivers.id, name: users.name }).from(drivers).innerJoin(users, eq(users.id, drivers.userId)).where(inArray(drivers.id, driverIds))
+      : [],
+  ]);
+  await tx.delete(routeStops).where(and(eq(routeStops.routeId, fromRouteId), inArray(routeStops.orderId, orderIds)));
+  const nameOf = (id: string | null) => driverNames.find((d) => d.id === id)?.name ?? null;
+  const changed = [from, to].filter((r) => r.status !== 'draft').map((r) => r.id);
+  await Promise.all([
+    tx.insert(routeStops).values(orderIds.map((orderId, i) => ({ routeId: toRouteId, orderId, sequence: next + i + 1 }))),
+    resequence(tx, [fromRouteId]),
+    tx.update(orders).set({ currentRouteId: toRouteId }).where(inArray(orders.id, orderIds)),
+    insertEvents(
+      tx,
+      orderIds.map((orderId) =>
+        eventRow(actor, orderId, 'route_changed', toRouteId, {
+          from: from.name,
+          to: to.name,
+          fromDriver: nameOf(from.driverId),
+          toDriver: nameOf(to.driverId),
+          ...(note && { reason: note }),
+        }),
+      ),
+    ),
+    changed.length && tx.update(routes).set({ changedAt: new Date() }).where(inArray(routes.id, changed)),
+    audit(tx, actor, 'stops_transferred', fromRouteId, { to: toRouteId, orderIds, ...(note && { reason: note }) }),
+  ]);
 }
 
 export interface ReoptimiseOutcome {
@@ -1203,6 +1211,7 @@ export async function releaseRoute(ctx: PlanningContext, routeId: string, actor:
         .where(eq(routeStops.routeId, routeId)),
       tx.select().from(vans).where(eq(vans.id, route.vanId)),
     ]);
+    if (!van?.active) throw conflict('VAN_INACTIVE', `${van?.name ?? 'The van'} is off the road. Choose another van before releasing.`);
     if (stops.length === 0) throw conflict('ROUTE_INCOMPLETE', 'Add at least one stop before releasing');
     const noGeo = stops.filter((s) => s.lat === null);
     if (noGeo.length) {
@@ -1246,19 +1255,245 @@ export async function unreleaseRoute(ctx: PlanningContext, routeId: string, acto
 }
 
 export async function deleteRoute(ctx: PlanningContext, routeId: string, actor: AuthUser): Promise<void> {
+  await ctx.db.transaction(async (tx) => removeRoute(tx, await lockRoute(tx, routeId), actor));
+}
+
+/** deleteRoute() on a route the caller has already locked: its orders go back to be planned again. */
+async function removeRoute(tx: Tx, route: RouteRow, actor: AuthUser, reason?: string): Promise<void> {
+  assertEditable(route);
+  const stopOrders = await tx.select({ orderId: routeStops.orderId }).from(routeStops).where(eq(routeStops.routeId, route.id));
+  await revertFromRoute(
+    tx,
+    stopOrders.map((s) => s.orderId),
+    actor,
+    route.name,
+  );
+  await tx.delete(routes).where(eq(routes.id, route.id));
+  await audit(tx, actor, 'route_deleted', route.id, { name: route.name, date: route.date, status: route.status, ...(reason && { reason }) });
+}
+
+// ---------- van off the road (DRV-02) ----------
+
+/** Route states that still need their van. */
+const NEEDS_VAN: RouteStatus[] = ['draft', 'released', 'in_progress'];
+
+const sumLoad = (stops: { loadUnits: number; loadKg: number; loadM3: number }[]) => ({
+  units: stops.reduce((n, s) => n + s.loadUnits, 0),
+  kg: stops.reduce((n, s) => n + s.loadKg, 0),
+  m3: stops.reduce((n, s) => n + s.loadM3, 0),
+});
+
+const vanRouteColumns = { route: routes, driverName: users.name };
+const selectRoutesWithDriver = (db: DbOrTx) =>
+  db.select(vanRouteColumns).from(routes).leftJoin(drivers, eq(drivers.id, routes.driverId)).leftJoin(users, eq(users.id, drivers.userId));
+
+/** Routes today or later that use the van; what deactivating it would affect. */
+const usingVan = (vanId: string, today: string) => and(eq(routes.vanId, vanId), inArray(routes.status, NEEDS_VAN), gte(routes.date, today))!;
+
+/** Stops still to do on each route, with their load. */
+async function outstandingStops(db: DbOrTx, routeIds: string[]) {
+  if (routeIds.length === 0) return [];
+  return db
+    .select({ routeId: routeStops.routeId, orderId: routeStops.orderId, loadUnits, loadKg, loadM3 })
+    .from(routeStops)
+    .innerJoin(orders, eq(orders.id, routeStops.orderId))
+    .where(and(inArray(routeStops.routeId, routeIds), isNull(routeStops.completedAt)))
+    .orderBy(asc(routeStops.sequence));
+}
+
+/**
+ * DRV-02: what taking a van off the road would affect, with the options for each
+ * route (spare vans that day, other routes its stops could move to).
+ */
+export async function getVanImpact(db: Db, vanId: string, today: string): Promise<VanImpact> {
+  const [van] = await db.select({ id: vans.id }).from(vans).where(eq(vans.id, vanId));
+  if (!van) throw notFound('Van not found');
+  const affected = await selectRoutesWithDriver(db).where(usingVan(vanId, today)).orderBy(asc(routes.date), asc(routes.name));
+  if (affected.length === 0) return { vanId, routes: [] };
+
+  const ids = affected.map((a) => a.route.id);
+  const dates = [...new Set(affected.map((a) => a.route.date))];
+  const [totals, open, sameDays, spare] = await Promise.all([
+    db
+      .select({ routeId: routeStops.routeId, n: sql<number>`count(*)`.mapWith(Number) })
+      .from(routeStops)
+      .where(inArray(routeStops.routeId, ids))
+      .groupBy(routeStops.routeId),
+    outstandingStops(db, ids),
+    selectRoutesWithDriver(db).where(inArray(routes.date, dates)).orderBy(asc(routes.name)),
+    db
+      .select()
+      .from(vans)
+      .where(and(eq(vans.active, true), ne(vans.id, vanId)))
+      .orderBy(asc(vans.name)),
+  ]);
+
+  return {
+    vanId,
+    routes: affected.map(({ route: r, driverName }) => {
+      const stops = open.filter((s) => s.routeId === r.id);
+      const load = sumLoad(stops);
+      const sameDay = sameDays.filter((d) => d.route.date === r.date);
+      const usedVans = new Set(sameDay.map((d) => d.route.vanId));
+      return {
+        id: r.id,
+        name: r.name,
+        date: r.date,
+        status: r.status,
+        driverName,
+        stopsTotal: totals.find((t) => t.routeId === r.id)?.n ?? 0,
+        stopsOutstanding: stops.length,
+        loadUnits: load.units,
+        spareVans: spare
+          .filter((v) => !usedVans.has(v.id))
+          .map((v) => ({ id: v.id, name: v.name, registration: v.registration, capacityUnits: v.capacityUnits, fits: overCapacity(v, load).length === 0 })),
+        transferTargets: sameDay
+          .filter(
+            ({ route: t }) =>
+              t.id !== r.id &&
+              t.vanId !== vanId &&
+              t.status !== 'completed' &&
+              // Stops already out for delivery can't go onto a draft the driver can't see.
+              (r.status !== 'in_progress' || t.status !== 'draft'),
+          )
+          .map(({ route: t, driverName: tDriver }) => ({ id: t.id, name: t.name, status: t.status, driverName: tDriver })),
+      };
+    }),
+  };
+}
+
+/**
+ * DRV-02: take a van off the road (breakdown, MOT, repairs). Every route that
+ * still needs it gets the planner's decision, all in one transaction, then the
+ * van is deactivated so it isn't offered for planning until reactivated.
+ */
+export async function takeVanOffRoad(
+  ctx: PlanningContext,
+  vanId: string,
+  input: VanDeactivateInput,
+  actor: AuthUser,
+  today: string,
+): Promise<void> {
+  const reason = input.reason ?? null;
+  const note = reason ? `Van off the road: ${reason}` : 'Van off the road';
+  const toRecalculate = new Set<string>();
+
   await ctx.db.transaction(async (tx) => {
-    const route = await lockRoute(tx, routeId);
-    assertEditable(route);
-    const stopOrders = await tx.select({ orderId: routeStops.orderId }).from(routeStops).where(eq(routeStops.routeId, routeId));
-    await revertFromRoute(
-      tx,
-      stopOrders.map((s) => s.orderId),
-      actor,
-      route.name,
-    );
-    await tx.delete(routes).where(eq(routes.id, routeId));
-    await audit(tx, actor, 'route_deleted', routeId, { name: route.name, date: route.date, status: route.status });
+    const [van] = await tx.select().from(vans).where(eq(vans.id, vanId)).for('update');
+    if (!van) throw notFound('Van not found');
+    if (!van.active) throw conflict('VAN_INACTIVE', `${van.name} is already off the road`);
+
+    // Lock the van's routes and every transfer target together, in id order (no deadlocks).
+    const affectedIds = (await tx.select({ id: routes.id }).from(routes).where(usingVan(vanId, today))).map((r) => r.id);
+    const targetIds = input.routes.flatMap((d) => (d.action === 'transfer' ? [d.toRouteId] : []));
+    const lockIds = [...new Set([...affectedIds, ...targetIds])];
+    const locked = lockIds.length
+      ? await tx.select().from(routes).where(inArray(routes.id, lockIds)).orderBy(asc(routes.id)).for('update')
+      : [];
+    const byId = new Map(locked.map((r) => [r.id, r]));
+    const affected = affectedIds.map((id) => byId.get(id)).filter((r): r is RouteRow => !!r && r.vanId === vanId && NEEDS_VAN.includes(r.status));
+
+    const decided = new Set(input.routes.map((d) => d.routeId));
+    if (affected.length !== input.routes.length || affected.some((r) => !decided.has(r.id))) {
+      throw conflict('PLAN_OUTDATED', `${van.name}'s routes changed while you were deciding. Review them again.`);
+    }
+
+    // Replacement vans: active, not this one, free that day, and each used once per day.
+    const swaps = input.routes.flatMap((d) => (d.action === 'swap' ? [{ ...d, route: byId.get(d.routeId)! }] : []));
+    const swapVanIds = [...new Set(swaps.map((s) => s.vanId))];
+    const [replacements, clashes, open] = await Promise.all([
+      swapVanIds.length ? tx.select().from(vans).where(inArray(vans.id, swapVanIds)) : [],
+      swapVanIds.length
+        ? tx
+            .select({ id: routes.id, name: routes.name, date: routes.date, vanId: routes.vanId })
+            .from(routes)
+            .where(and(inArray(routes.vanId, swapVanIds), inArray(routes.date, [...new Set(swaps.map((s) => s.route.date))])))
+        : [],
+      outstandingStops(tx, affected.map((r) => r.id)),
+    ]);
+    const seen = new Set<string>();
+    for (const s of swaps) {
+      const v = replacements.find((x) => x.id === s.vanId);
+      if (!v?.active || v.id === vanId) throw badRequest(`Choose an active replacement van for ${s.route.name}`);
+      const clash = clashes.find((c) => c.vanId === v.id && c.date === s.route.date && c.id !== s.route.id);
+      if (clash) throw conflict('VAN_BUSY', `${v.name} is already used by ${clash.name} on ${s.route.date}`);
+      const key = `${v.id}|${s.route.date}`;
+      if (seen.has(key)) throw conflict('VAN_BUSY', `${v.name} can only replace one route on ${s.route.date}`);
+      seen.add(key);
+      // Released and started routes are loaded for real: the replacement must take it.
+      if (s.route.status !== 'draft') {
+        const over = overCapacity(v, sumLoad(open.filter((o) => o.routeId === s.route.id)));
+        if (over.length) {
+          throw conflict('OVER_CAPACITY', `${s.route.name} won't fit in ${v.name} (${over.join(', ')}). Choose a bigger van or move its stops to another route.`);
+        }
+      }
+    }
+
+    for (const d of input.routes) {
+      const r = byId.get(d.routeId)!;
+      const openIds = open.filter((o) => o.routeId === r.id).map((o) => o.orderId);
+      const onTheRoad = r.status === 'in_progress';
+
+      if (d.action === 'swap') {
+        const v = replacements.find((x) => x.id === d.vanId)!;
+        await Promise.all([
+          tx
+            .update(routes)
+            .set({ vanId: v.id, ...(r.status !== 'draft' && { changedAt: new Date() }) })
+            .where(eq(routes.id, r.id)),
+          insertEvents(
+            tx,
+            openIds.map((orderId) => eventRow(actor, orderId, 'route_reassigned', r.id, { route: r.name, vanId: v.id, van: v.name, reason: note })),
+          ),
+          audit(tx, actor, 'route_reassigned', r.id, { vanId: v.id, fromVanId: vanId, reason }),
+        ]);
+      } else if (d.action === 'unassign') {
+        if (onTheRoad) throw conflict('ROUTE_STARTED', `${r.name} is already on the road: swap its van or move its stops instead`);
+        const unrelease = r.status === 'released';
+        await Promise.all([
+          tx
+            .update(routes)
+            .set({ vanId: null, ...(unrelease && { status: 'draft' as const, releasedAt: null, changedAt: new Date() }) })
+            .where(eq(routes.id, r.id)),
+          unrelease &&
+            insertEvents(
+              tx,
+              openIds.map((orderId) => eventRow(actor, orderId, 'route_unreleased', r.id, { route: r.name, reason: note })),
+            ),
+          audit(tx, actor, unrelease ? 'route_unreleased' : 'route_reassigned', r.id, { vanId: null, fromVanId: vanId, reason }),
+        ]);
+      } else if (d.action === 'unplan') {
+        if (onTheRoad) throw conflict('ROUTE_STARTED', `${r.name} is already on the road: swap its van or move its stops instead`);
+        await removeRoute(tx, r, actor, note);
+      } else {
+        const to = byId.get(d.toRouteId);
+        if (!to || to.id === r.id) throw badRequest(`Choose another route for ${r.name}'s stops`);
+        if (to.vanId === vanId) throw conflict('VAN_BUSY', `${to.name} uses the same van – choose another route for ${r.name}'s stops`);
+        if (openIds.length) await moveStops(tx, r, to, openIds, actor, note);
+        toRecalculate.add(to.id);
+        if (onTheRoad) {
+          // Its completed stops stay on it as the record of what this van delivered.
+          toRecalculate.add(r.id);
+        } else {
+          // Nothing left on a route that never started: remove it.
+          await removeRoute(tx, r, actor, note);
+        }
+      }
+    }
+
+    await Promise.all([
+      tx.update(vans).set({ active: false }).where(eq(vans.id, vanId)),
+      tx.insert(auditLog).values({
+        actorId: actor.id,
+        action: 'van_deactivated',
+        entity: 'van',
+        entityId: vanId,
+        details: { reason, routes: input.routes },
+      }),
+    ]);
   });
+
+  await Promise.all([...toRecalculate].map((id) => recalculateRoute(ctx, id)));
 }
 
 /** Thrown for "can't optimise twice at once" etc. */

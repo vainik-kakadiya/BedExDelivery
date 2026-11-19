@@ -292,6 +292,28 @@ export interface VanDto {
   defaultFor: string[];
 }
 
+/** DRV-02: a route that still uses a van about to be taken off the road. */
+export interface VanImpactRoute {
+  id: string;
+  name: string;
+  date: string;
+  status: RouteStatus;
+  driverName: string | null;
+  stopsTotal: number;
+  /** Stops not yet completed; these are what has to move if the van can't. */
+  stopsOutstanding: number;
+  loadUnits: number;
+  /** Active vans not on any route that day; `fits` = the outstanding load fits it. */
+  spareVans: { id: string; name: string; registration: string; capacityUnits: number; fits: boolean }[];
+  /** Other routes that day the outstanding stops could move to. */
+  transferTargets: { id: string; name: string; status: RouteStatus; driverName: string | null }[];
+}
+
+export interface VanImpact {
+  vanId: string;
+  routes: VanImpactRoute[];
+}
+
 /** DRV-04: one driver's day. */
 export interface DriverProgressStop {
   stopId: string;

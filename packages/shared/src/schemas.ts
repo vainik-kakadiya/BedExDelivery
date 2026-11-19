@@ -329,6 +329,34 @@ export const vanSchema = z.object({
 export type VanInput = z.infer<typeof vanSchema>;
 export const vanUpdateSchema = vanSchema.partial();
 
+/**
+ * DRV-02: take a van off the road (e.g. it has broken down). Every route still
+ * using it, today or later, says what happens to it:
+ * - swap: keep the route, use another van
+ * - unassign: keep the stops and driver with no van (a released route goes back to draft)
+ * - unplan: remove the route; its orders go back to be planned again
+ * - transfer: move the outstanding stops to another route on the same day
+ */
+export const VAN_ROUTE_ACTIONS = ['swap', 'unassign', 'unplan', 'transfer'] as const;
+export type VanRouteAction = (typeof VAN_ROUTE_ACTIONS)[number];
+
+export const vanDeactivateSchema = z.object({
+  reason: optText(200),
+  routes: z
+    .array(
+      z.discriminatedUnion('action', [
+        z.object({ routeId: uuid, action: z.literal('swap'), vanId: uuid }),
+        z.object({ routeId: uuid, action: z.literal('unassign') }),
+        z.object({ routeId: uuid, action: z.literal('unplan') }),
+        z.object({ routeId: uuid, action: z.literal('transfer'), toRouteId: uuid }),
+      ]),
+    )
+    .max(200)
+    .refine((v) => uniqueIds(v.map((r) => r.routeId)), 'Each route can only have one decision')
+    .default([]),
+});
+export type VanDeactivateInput = z.infer<typeof vanDeactivateSchema>;
+
 // ---------- public tracking ----------
 
 export const trackQuerySchema = z.object({

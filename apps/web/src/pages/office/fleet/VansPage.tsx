@@ -1,11 +1,11 @@
 import type { VanDto } from '@bedex/shared';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Pencil, Plus, Power, Truck } from 'lucide-react';
+import { Pencil, Plus, Power, Truck, Wrench } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
-import { confirmDialog } from '../../../components/ConfirmDialog';
 import { api } from '../../../lib/api';
 import { useAuth } from '../../../stores/auth';
 import { Field, readApiError } from './fields';
+import { VanOffRoad } from './VanOffRoad';
 
 interface FormState {
   id: string | null;
@@ -35,8 +35,10 @@ export function VansPage() {
   const [errors, setErrors] = useState<{ message: string; fields: Record<string, string> } | null>(null);
   const [saving, setSaving] = useState(false);
   const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null);
+  const [offRoad, setOffRoad] = useState<VanDto | null>(null);
 
-  const refresh = () => Promise.all([queryClient.invalidateQueries({ queryKey: ['fleet'] }), queryClient.invalidateQueries({ queryKey: ['planner'] })]);
+  const refresh = () =>
+    Promise.all(['fleet', 'planner', 'dashboard'].map((key) => queryClient.invalidateQueries({ queryKey: [key] })));
 
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -61,21 +63,11 @@ export function VansPage() {
     }
   }
 
-  async function setActive(v: VanDto, active: boolean) {
-    if (
-      !active &&
-      !(await confirmDialog({
-        title: `Deactivate ${v.name} (${v.registration})?`,
-        message: "It won't be offered for new routes. You can reactivate it later.",
-        confirmLabel: 'Deactivate',
-        tone: 'danger',
-      }))
-    ) {
-      return;
-    }
+  /** Back on the road. Taking it off goes through VanOffRoad, which also deals with its routes. */
+  async function reactivate(v: VanDto) {
     setRowError(null);
     try {
-      await api(`/vans/${v.id}`, { method: 'PATCH', json: { active } });
+      await api(`/vans/${v.id}`, { method: 'PATCH', json: { active: true } });
       await refresh();
     } catch (err) {
       setRowError({ id: v.id, message: readApiError(err).message });
@@ -88,7 +80,7 @@ export function VansPage() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Vans</h1>
-        {isAdmin && !form && (
+        {isAdmin && !form && !offRoad && (
           <button type="button" className="btn-primary" onClick={() => setForm(EMPTY)}>
             <Plus className="h-4 w-4" aria-hidden />
             Add van
@@ -131,6 +123,18 @@ export function VansPage() {
         </form>
       )}
 
+      {offRoad && (
+        <VanOffRoad
+          key={offRoad.id}
+          van={offRoad}
+          onCancel={() => setOffRoad(null)}
+          onDone={async () => {
+            setOffRoad(null);
+            await refresh();
+          }}
+        />
+      )}
+
       <div className="card overflow-x-auto">
         <table className="w-full text-left">
           <thead className="border-b border-border bg-surface text-xs uppercase tracking-wide text-slate-500">
@@ -151,7 +155,7 @@ export function VansPage() {
                   <span className="flex items-center gap-2 font-medium">
                     <Truck className="h-4 w-4 text-slate-400" aria-hidden />
                     {v.name}
-                    {!v.active && <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] font-normal text-slate-500">Inactive</span>}
+                    {!v.active && <span className="rounded bg-warning/10 px-1.5 py-0.5 text-[11px] font-normal text-warning">Off the road</span>}
                   </span>
                   {rowError?.id === v.id && <span className="mt-1 block text-xs text-danger">{rowError.message}</span>}
                 </td>
@@ -163,14 +167,26 @@ export function VansPage() {
                 <td className="px-4 py-2.5">
                   {isAdmin && (
                     <div className="flex justify-end gap-1.5">
-                      <button type="button" className="btn-secondary px-2.5 py-1 text-xs" onClick={() => (setForm(toForm(v)), setErrors(null))}>
+                      <button type="button" className="btn-secondary px-2.5 py-1 text-xs" onClick={() => (setForm(toForm(v)), setErrors(null), setOffRoad(null))}>
                         <Pencil className="h-3.5 w-3.5" aria-hidden />
                         Edit
                       </button>
-                      <button type="button" className="btn-secondary px-2.5 py-1 text-xs" onClick={() => setActive(v, !v.active)}>
-                        <Power className="h-3.5 w-3.5" aria-hidden />
-                        {v.active ? 'Deactivate' : 'Reactivate'}
-                      </button>
+                      {v.active ? (
+                        <button
+                          type="button"
+                          className="btn-secondary px-2.5 py-1 text-xs"
+                          disabled={offRoad?.id === v.id}
+                          onClick={() => (setOffRoad(v), setForm(null), setRowError(null))}
+                        >
+                          <Wrench className="h-3.5 w-3.5" aria-hidden />
+                          Take off road
+                        </button>
+                      ) : (
+                        <button type="button" className="btn-secondary px-2.5 py-1 text-xs" onClick={() => reactivate(v)}>
+                          <Power className="h-3.5 w-3.5" aria-hidden />
+                          Reactivate
+                        </button>
+                      )}
                     </div>
                   )}
                 </td>

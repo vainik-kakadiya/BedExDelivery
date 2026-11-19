@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { driverCreateSchema, driverUpdateSchema, stopTransferSchema, vanSchema } from './schemas';
+import { driverCreateSchema, driverUpdateSchema, stopTransferSchema, vanDeactivateSchema, vanSchema } from './schemas';
 
 const driver = {
   name: 'Alex Morgan',
@@ -67,5 +67,30 @@ describe('stopTransferSchema (DRV-05)', () => {
     expect(stopTransferSchema.safeParse({ orderIds: [], toRouteId: to }).success).toBe(false);
     expect(stopTransferSchema.safeParse({ orderIds: [id, id], toRouteId: to }).success).toBe(false);
     expect(stopTransferSchema.safeParse({ orderIds: [id], toRouteId: to }).success).toBe(true);
+  });
+});
+
+describe('vanDeactivateSchema (DRV-02)', () => {
+  const route = '00000000-0000-4000-8000-000000000001';
+  const other = '00000000-0000-4000-8000-000000000002';
+
+  it('accepts no routes and an empty reason', () => {
+    expect(vanDeactivateSchema.parse({ reason: '' })).toEqual({ reason: null, routes: [] });
+  });
+
+  it('needs the van or route each action points to', () => {
+    expect(vanDeactivateSchema.safeParse({ routes: [{ routeId: route, action: 'swap' }] }).success).toBe(false);
+    expect(vanDeactivateSchema.safeParse({ routes: [{ routeId: route, action: 'transfer' }] }).success).toBe(false);
+    expect(vanDeactivateSchema.safeParse({ routes: [{ routeId: route, action: 'swap', vanId: other }] }).success).toBe(true);
+    expect(vanDeactivateSchema.safeParse({ routes: [{ routeId: route, action: 'transfer', toRouteId: other }] }).success).toBe(true);
+    expect(vanDeactivateSchema.safeParse({ routes: [{ routeId: route, action: 'scrap' }] }).success).toBe(false);
+  });
+
+  it('allows one decision per route', () => {
+    const twice = [
+      { routeId: route, action: 'unplan' },
+      { routeId: route, action: 'unassign' },
+    ];
+    expect(vanDeactivateSchema.safeParse({ routes: twice }).success).toBe(false);
   });
 });

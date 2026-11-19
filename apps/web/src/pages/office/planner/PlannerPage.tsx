@@ -59,8 +59,9 @@ export function PlannerPage() {
     const taken = new Set(state.routes.filter((r) => r.status !== 'draft' && r.vanId).map((r) => r.vanId));
     const next: VehicleChoice = {};
     for (const d of state.drivers) {
-      const vanId =
-        (d.defaultVanId && !taken.has(d.defaultVanId) ? d.defaultVanId : state.vans.find((v) => !taken.has(v.id))?.id) ?? '';
+      // state.vans is active vans only: a default van that's off the road falls through to a spare.
+      const usable = (id: string | null): id is string => !!id && !taken.has(id) && state.vans.some((v) => v.id === id);
+      const vanId = (usable(d.defaultVanId) ? d.defaultVanId : state.vans.find((v) => usable(v.id))?.id) ?? '';
       const on = d.busyRouteNames.length === 0 && vanId !== '';
       if (on) taken.add(vanId);
       next[d.id] = { on, vanId };

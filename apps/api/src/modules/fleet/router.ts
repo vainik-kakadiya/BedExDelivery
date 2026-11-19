@@ -3,6 +3,7 @@ import {
   driverUpdateSchema,
   isoDateSchema,
   toLondonDate,
+  vanDeactivateSchema,
   vanSchema,
   vanUpdateSchema,
 } from '@bedex/shared';
@@ -11,6 +12,7 @@ import { z } from 'zod';
 import type { AppContext } from '../../context';
 import { notFound } from '../../lib/errors';
 import { currentUser, requireAuth, requireRole } from '../../middleware/auth';
+import { getVanImpact, takeVanOffRoad } from '../planning/service';
 import { createDriver, createVan, getDriverProgress, listDrivers, listVans, updateDriver, updateVan } from './service';
 
 const uuid = z.string().uuid();
@@ -50,7 +52,7 @@ export function driversRouter({ db, env }: AppContext) {
 }
 
 /** DRV-02. Admin manages vans; office staff can see them. */
-export function vansRouter({ db, env }: AppContext) {
+export function vansRouter({ db, env, routing }: AppContext) {
   const router = Router();
   router.use(requireAuth(env.JWT_ACCESS_SECRET));
 
@@ -65,6 +67,17 @@ export function vansRouter({ db, env }: AppContext) {
 
   router.patch('/:id', requireRole('admin'), async (req, res) => {
     await updateVan(db, idParam(req.params.id, 'Van'), vanUpdateSchema.parse(req.body), currentUser(req), toLondonDate());
+    res.json(await listVans(db));
+  });
+
+  // Off the road (e.g. a breakdown): first see which routes it affects, then decide for each.
+  router.get('/:id/impact', requireRole('admin'), async (req, res) => {
+    res.json(await getVanImpact(db, idParam(req.params.id, 'Van'), toLondonDate()));
+  });
+
+  router.post('/:id/deactivate', requireRole('admin'), async (req, res) => {
+    const id = idParam(req.params.id, 'Van');
+    await takeVanOffRoad({ db, routing }, id, vanDeactivateSchema.parse(req.body), currentUser(req), toLondonDate());
     res.json(await listVans(db));
   });
 

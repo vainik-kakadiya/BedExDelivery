@@ -269,11 +269,20 @@ export async function updateVan(db: Db, id: string, input: Partial<VanInput>, ac
     if (!current) throw notFound('Van not found');
     if (input.registration) await assertRegistrationFree(tx, input.registration, id);
     if (input.active === false && current.active) {
-      const busy = await committedRoutes(tx, today, { vanId: id });
-      if (busy.length) throw conflict('VAN_BUSY', `Reassign ${busy.map((r) => `${r.name} (${r.date})`).join(', ')} before deactivating this van`);
+      // Drafts count too: they would otherwise keep a van that can't be released.
+      // Vans with routes go through POST /vans/:id/deactivate, which rehomes them.
+      const busy = await tx
+        .select({ name: routes.name, date: routes.date })
+        .from(routes)
+        .where(and(eq(routes.vanId, id), inArray(routes.status, ['draft', ...ACTIVE_ROUTE_STATUSES]), gte(routes.date, today)))
+        .orderBy(asc(routes.date));
+      if (busy.length) {
+        throw conflict('VAN_BUSY', `Decide what happens to ${busy.map((r) => `${r.name} (${r.date})`).join(', ')} before deactivating this van`);
+      }
     }
     await tx.update(vans).set(input).where(eq(vans.id, id));
-    await audit(tx, actor, input.active === false ? 'van_deactivated' : 'van_updated', 'van', id, { changed: Object.keys(input) });
+    const action = input.active === false ? 'van_deactivated' : input.active === true && !current.active ? 'van_reactivated' : 'van_updated';
+    await audit(tx, actor, action, 'van', id, { changed: Object.keys(input) });
   });
 }
 

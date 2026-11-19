@@ -127,6 +127,8 @@ describe('dashboard & exports RBAC', () => {
       ['patch', `/api/v1/drivers/${id}`],
       ['post', '/api/v1/vans'],
       ['patch', `/api/v1/vans/${id}`],
+      ['get', `/api/v1/vans/${id}/impact`],
+      ['post', `/api/v1/vans/${id}/deactivate`],
     ] as const) {
       expect((await request(app)[method](path).set('Authorization', asOffice).send({})).status, `${method} ${path}`).toBe(403);
     }
