@@ -10,6 +10,7 @@ import {
 } from '@bedex/shared';
 import { asc, eq } from 'drizzle-orm';
 import { Router } from 'express';
+import type { Logger } from 'pino';
 import { z } from 'zod';
 import type { AppContext } from '../../context';
 import { notFound } from '../../lib/errors';
@@ -38,10 +39,10 @@ const routeId = (raw: string | undefined) => {
 const dateQuery = z.object({ date: isoDateSchema.optional() });
 
 /** RTE-01 – RTE-09 (manifests, RTE-10, live under /exports). */
-export function routesRouter({ db, env, routing }: AppContext) {
+export function routesRouter({ db, env, routing }: AppContext, logger?: Logger) {
   const router = Router();
   const ctx: PlanningContext = { db, routing };
-  const jobs = new OptimiseJobs();
+  const jobs = new OptimiseJobs(logger);
   router.use(requireAuth(env.JWT_ACCESS_SECRET), requireRole('admin', 'office'));
 
   // Simple list for filters (DSH-05).

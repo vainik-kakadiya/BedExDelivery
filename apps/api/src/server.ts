@@ -12,7 +12,16 @@ import { createRoutingEngine } from './modules/planning/engine';
 config({ path: ['../../.env', '.env'] });
 
 const env = loadEnv();
-const logger = pino({ level: env.LOG_LEVEL });
+// Development: coloured one-line logs. Production: JSON (one object per line) for `docker compose logs`.
+const logger = pino({
+  level: env.LOG_LEVEL,
+  ...(env.NODE_ENV === 'development' && {
+    transport: {
+      target: 'pino-pretty',
+      options: { singleLine: true, translateTime: 'SYS:HH:MM:ss', ignore: 'pid,hostname,req,res,responseTime' },
+    },
+  }),
+});
 const { db, client } = createDb(env.DATABASE_URL, { max: env.DATABASE_POOL_MAX });
 const changes = new ChangeFeed();
 const routing = createRoutingEngine(env, logger);

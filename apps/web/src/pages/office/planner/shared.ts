@@ -1,8 +1,7 @@
 import type { DragEvent } from 'react';
 
-/** One colour per route: polyline, pins and the card's swatch (RTE-06). */
-export const ROUTE_COLOURS = ['#2563EB', '#DC2626', '#16A34A', '#D97706', '#7C3AED', '#0891B2', '#DB2777', '#65A30D', '#475569', '#EA580C'];
-export const routeColour = (index: number) => ROUTE_COLOURS[index % ROUTE_COLOURS.length]!;
+/** RTE-06: shared with the live tracking map. */
+export { ROUTE_COLOURS, routeColour } from '../../../lib/routeColours';
 
 // ---------- drag and drop (RTE-07) ----------
 

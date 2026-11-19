@@ -64,7 +64,9 @@ packages/
 
 - **Express 5** over Fastify. It has native async error handling and the larger middleware ecosystem.
 - **Drizzle** over Prisma. Its SQL-first style suits trigram search and the keyset pagination.
-- **HS256** access tokens (15 min) via `jose`. Refresh tokens are 30 days (sliding: renewed on every refresh), stored as SHA-256 hashes, rotated on every use and grouped into families. Reusing a revoked token revokes the whole family. A 10-second grace window covers two tabs refreshing at the same moment.
+- **HS256** access tokens (15 min) via `jose`, kept in page memory. The session itself is the refresh token: an `httpOnly` cookie, 30 days (sliding: renewed on every refresh), stored as a SHA-256 hash, rotated on every use and grouped into families, so a reload or an app restart signs straight back in.
+  - Reusing a revoked token revokes the whole family. Two exceptions: a 10-second grace window covers two tabs refreshing at the same moment, and a token whose replacement was never used is accepted once (the phone closed or lost signal before the new cookie arrived).
+  - The app only signs out when the server rejects the cookie (401). A restarting API (502), a server error or rate limiting keeps the session, and start-up retries for about 30 seconds.
 - **argon2id** (`@node-rs/argon2`, prebuilt binaries). Accounts lock for 15 minutes after 5 failed sign-ins.
 - **Tracking refs** are `BDX` + 9 characters from a 32-character alphabet with no 0/O/1/I. Legacy references keep their original format.
 - **Reopen** (admin only) moves a Delivered or Cancelled order back to *Awaiting scheduling*.
@@ -86,7 +88,9 @@ packages/
 - Web: design tokens, office shell, sign-in, orders list, driver shell (PWA manifest + service worker, offline banner), public tracking page.
 - **Office dashboard (DSH-01 – DSH-07):**
   - Summary cards, today's routes (progress, ETA drift, last update), and an action queue with Reschedule / Return / Cancel.
-  - Live map. It needs `VITE_GOOGLE_MAPS_BROWSER_KEY`; without the key it shows a list of drivers' last positions instead.
+  - Live map, and a full-page **Live tracking** view (`/office/tracking`). Every van of the day on one map: its route line and stops in the planner's colours, finished stops ticked (✕ if not delivered), and the van where it was last seen. Beside the map, one card per van with progress, next stop and ETA, ETA at the last stop, time back at the depot, and the postcodes done. It needs `VITE_GOOGLE_MAPS_BROWSER_KEY`; without the key it shows a list of vans and their last positions instead.
+  - Van positions: the driver app sends GPS about every 30 s (`POST /driver/location`), but only while the driver has a released or in-progress route with stops left. Nothing is stored off duty. Browsers give GPS only while the app is open on screen, so while the driver is in Google Maps the van is shown at its last completed stop.
+  - After each delivery, the remaining stops are re-timed from that stop and the current time, so the last-stop ETA stays current.
   - Orders page filters (date, driver, route, postcode, status) kept in the URL.
   - Exports in CSV, XLSX and PDF for the order list, delivery report and route manifest. Each export is written to the audit log.
   - Realtime updates: Postgres statement-level triggers `NOTIFY bedex_changes`, the API `LISTEN`s and pushes Server-Sent Events, and the browser refetches the affected data. The browser never connects to Supabase directly. If the stream drops, the dashboard polls every 10 s.
@@ -107,14 +111,18 @@ packages/
 
 | Configured | Optimisation (RTE-04) | Travel times / ETAs (RTE-07) |
 |---|---|---|
-| `GOOGLE_SERVICE_ACCOUNT_JSON` + `GOOGLE_CLOUD_PROJECT_ID` | Route Optimization API `optimizeTours` | – |
+| `GOOGLE_CLOUD_PROJECT_ID` + `GOOGLE_SERVICE_ACCOUNT_JSON`, or `GOOGLE_CLOUD_PROJECT_ID` alone on a Google Cloud VM (uses the VM's service account; see [deploy/google-cloud.md](deploy/google-cloud.md#6-google-route-optimisation-no-key-file-needed)) | Route Optimization API `optimizeTours` | – |
 | `GOOGLE_MAPS_SERVER_KEY` | – | Routes API `computeRoutes` (≤25 waypoints per call, stitched) |
-| nothing | built-in: cheapest insertion + relocate/2-opt | straight line × 1.35 at 24 km/h + 2 min parking |
+| nothing | built-in: cheapest insertion + relocate/exchange/2-opt | straight line × 1.35; 20 km/h for a leg's first 5 km, 40 km/h to 25 km, 75 km/h beyond; + 2 min parking |
 
 Estimated routes are labelled **Estimated** in the UI and drawn as dashed straight lines.
 - The Google request/response mapping is unit-tested against the documented formats, but it has **not been run against Google yet**.
 - The Route Optimization API rejects API keys and needs a service account.
-- If a Routes API call fails, it falls back to estimates and logs a warning.
+- If a Routes API call fails, it falls back to estimates and logs a warning. If a Route Optimization call fails, the built-in optimiser plans instead and the error is logged.
+- *Re-optimise* on one route starts from the current stop order and checks the proposal on the same travel times the route is shown with (real roads when the Routes API is set up). It only saves the new order if it is better, so it never makes a route longer. Working hours can't drop stops there: re-ordering the same stops doesn't change whether the day fits, and overtime still shows as a warning.
+- **Hard rules** (RTE-08): an order without a map location can't be put on a route; a route can't be released without a driver and van, with a stop that has no map location, or with more load than its van holds (units, kg or m³). Late ETAs and overtime stay warnings, listed in the release confirmation, since the office may have agreed them with the customer or driver.
+- **Customers** see a delivery date on the tracking page only once the route is released. While an order sits on a draft route, tracking shows the status it had before planning.
+- **Address lookup** (ORD-07): the full address within its postcode, then the postcode alone, then the postcode district. The last two are marked *Approximate location*. In the planner, **Fix location** lets the office correct the address (looked up again) or drop a pin (on the map with `VITE_GOOGLE_MAPS_BROWSER_KEY`, otherwise by pasting coordinates). A pin dropped on an order that's already on a route re-times that route.
 
 - **Drivers & vans (DRV-01 – DRV-05).** `/office/drivers` and `/office/vans`. Creating and editing drivers (including their logins) and vans is admin-only, per PRD §2; office staff can view both and reassign.
   - **Drivers:** login by email and/or mobile, working hours, max hours, default van, optional home location. Deactivating a driver revokes their sessions and blocks sign-in; their history is kept. A password reset also signs them out.
@@ -143,7 +151,7 @@ Estimated routes are labelled **Estimated** in the UI and drawn as dashed straig
 **Not started.**
 - Order create/edit UI, saved import templates (`import_templates`), geocoding (ORD-07), Shopify (ORD-08)
 - Office/admin user management (ACC-01)
-- Driver app: explicit Start/End route (DRP-03, DRP-09), *Partially delivered* / *Failed* outcomes and issue reports (rest of DRP-05), signature pad for `requires_signature` orders, IndexedDB offline queue (DRP-06), GPS (DRP-08). Showing proof photos to the office (HST-03) and on tracking (TRK-03).
+- Driver app: explicit Start/End route (DRP-03, DRP-09), *Partially delivered* / *Failed* outcomes and issue reports (rest of DRP-05), signature pad for `requires_signature` orders, IndexedDB offline queue (DRP-06), background GPS (DRP-08: needs a native app; the PWA only sends GPS while it is open). Showing proof photos to the office (HST-03) and on tracking (TRK-03).
 - Optimisation jobs live in memory: a single API process (PM2 fork mode) is fine; several processes would need BullMQ/Redis.
 - Audit-log viewer and data migration (ACC-03 viewer, ACC-05)
 - Postgres RLS as the second layer for driver data (ACC-02). Today the API layer enforces it.

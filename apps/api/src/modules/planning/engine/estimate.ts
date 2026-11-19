@@ -1,8 +1,9 @@
 /**
  * Offline routing used when no Google credentials are configured.
- * Travel = straight-line distance × road factor at an urban van speed, so
- * results are labelled "estimated" in the UI. The optimiser is a cheapest-
- * insertion construction followed by relocate + 2-opt improvement, honouring
+ * Travel = straight-line distance × road factor, at a speed that rises with the
+ * length of the leg (town streets → A-roads → motorways), so results are
+ * labelled "estimated" in the UI. The optimiser is a cheapest-insertion
+ * construction followed by relocate, exchange and 2-opt improvement, honouring
  * van capacity, delivery windows and drivers' working hours.
  */
 import type {
@@ -20,10 +21,31 @@ import type {
 const EARTH_RADIUS_M = 6_371_000;
 /** Roads are longer than straight lines; ~1.35 is typical for UK urban driving. */
 const ROAD_FACTOR = 1.35;
-/** Average urban van speed including junctions (≈15 mph). */
-const AVG_SPEED_MPS = 24 / 3.6;
+/**
+ * Van speed by distance band, including junctions. One flat urban speed made a
+ * 60-mile leg take 4+ hours, so long routes "didn't fit" a working day that they
+ * fit easily on real roads. The first few km of any leg are town streets; longer
+ * legs use A-roads and then motorways / dual carriageways.
+ */
+const SPEED_BANDS: { untilMeters: number; mps: number }[] = [
+  { untilMeters: 5_000, mps: 20 / 3.6 },
+  { untilMeters: 25_000, mps: 40 / 3.6 },
+  { untilMeters: Infinity, mps: 75 / 3.6 },
+];
 /** Parking / manoeuvring at each stop. */
 const PARKING_SECONDS = 120;
+
+function driveSeconds(meters: number): number {
+  let seconds = 0;
+  let from = 0;
+  for (const band of SPEED_BANDS) {
+    const part = Math.min(meters, band.untilMeters) - from;
+    if (part <= 0) break;
+    seconds += part / band.mps;
+    from = band.untilMeters;
+  }
+  return seconds;
+}
 
 export function haversineMeters(a: LatLng, b: LatLng): number {
   const rad = (d: number) => (d * Math.PI) / 180;
@@ -36,7 +58,7 @@ export function haversineMeters(a: LatLng, b: LatLng): number {
 export function estimateLeg(a: LatLng, b: LatLng): Leg {
   const meters = haversineMeters(a, b) * ROAD_FACTOR;
   if (meters < 50) return { meters, seconds: 0 };
-  return { meters, seconds: Math.round(meters / AVG_SPEED_MPS + PARKING_SECONDS) };
+  return { meters, seconds: Math.round(driveSeconds(meters) + PARKING_SECONDS) };
 }
 
 // ---------- simulation ----------
@@ -104,15 +126,30 @@ const cost = (sim: Simulation) => sim.seconds + sim.meters / 1000;
 
 // ---------- optimiser ----------
 
-export function optimiseLocally(model: PlanningModel): OptimiseResult {
+export interface LocalOptions {
+  /**
+   * Start from these stop orders (order ids, one list per vehicle) instead of an
+   * empty plan. Improvement only ever accepts cheaper plans, so the result is
+   * never worse than the starting plan. Ignored for a vehicle whose list breaks
+   * a rule (capacity, window, hours).
+   */
+  initial?: string[][];
+}
+
+export function optimiseLocally(model: PlanningModel, options: LocalOptions = {}): OptimiseResult {
   const { vehicles } = model;
-  const routes: ShipmentSpec[][] = vehicles.map(() => []);
-  const costs: number[] = vehicles.map((v) => cost(simulate(v, [])));
+  const byId = new Map(model.shipments.map((s) => [s.orderId, s]));
+  const routes: ShipmentSpec[][] = vehicles.map((vehicle, v) => {
+    const seed = (options.initial?.[v] ?? []).map((id) => byId.get(id)).filter((s): s is ShipmentSpec => !!s);
+    return seed.length && simulate(vehicle, seed).ok ? seed : [];
+  });
+  const costs: number[] = vehicles.map((v, i) => cost(simulate(v, routes[i]!)));
   const skipped: OptimiseResult['skipped'] = [];
+  const seeded = new Set(routes.flat());
 
   const maxCapacity = vehicles.some((v) => v.capacity === null) ? Infinity : Math.max(0, ...vehicles.map((v) => v.capacity ?? 0));
   // Tightest windows first gives cheapest insertion a better start on ties.
-  let pending = [...model.shipments].sort(
+  let pending = model.shipments.filter((s) => !seeded.has(s)).sort(
     (a, b) => (a.window?.end.getTime() ?? Infinity) - (b.window?.end.getTime() ?? Infinity) || a.orderId.localeCompare(b.orderId),
   );
   if (vehicles.length === 0) {
@@ -216,6 +253,31 @@ function improve(vehicles: VehicleSpec[], routes: ShipmentSpec[][], costs: numbe
           costs[best.to] = cost(simulate(vehicles[best.to]!, routes[best.to]!));
           improved = true;
           i = -1; // route changed; rescan it
+        }
+      }
+    }
+
+    // Exchange: swap two stops on different routes (relocate can't do this in one
+    // step when both vans are full or both moves are only good together).
+    for (let a = 0; a < routes.length; a++) {
+      for (let b = a + 1; b < routes.length; b++) {
+        for (let i = 0; i < routes[a]!.length; i++) {
+          for (let j = 0; j < routes[b]!.length; j++) {
+            const ra = [...routes[a]!];
+            const rb = [...routes[b]!];
+            [ra[i], rb[j]] = [rb[j]!, ra[i]!];
+            const simA = simulate(vehicles[a]!, ra);
+            if (!simA.ok) continue;
+            const simB = simulate(vehicles[b]!, rb);
+            if (!simB.ok) continue;
+            if (cost(simA) + cost(simB) < costs[a]! + costs[b]! - 1) {
+              routes[a] = ra;
+              routes[b] = rb;
+              costs[a] = cost(simA);
+              costs[b] = cost(simB);
+              improved = true;
+            }
+          }
         }
       }
     }

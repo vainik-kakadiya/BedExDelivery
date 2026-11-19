@@ -148,11 +148,26 @@ export function authRouter({ db, env }: AppContext) {
       throw unauthorized('Please sign in', 'NO_SESSION');
     }
 
+    // The token this one was rotated into, when that one has never been used itself.
+    let lostSuccessorId: string | null = null;
     if (token.revokedAt) {
       if (Date.now() - token.revokedAt.getTime() < REUSE_GRACE_MS) {
         // Another tab just rotated it; that tab's cookie is now current, so don't clear it.
         throw unauthorized('Session refresh in progress, retry', 'REFRESH_RACE');
       }
+      // A phone that was closed (or lost signal) mid-refresh never received the new cookie
+      // and comes back with the previous one. If that newer token has never been used, this
+      // is that lost response, not theft: carry on from here instead of ending the session.
+      // A thief replaying an older token is still caught: the real device then presents the
+      // revoked successor, which revokes the whole family below.
+      const successor = token.replacedById
+        ? await db.query.refreshTokens.findFirst({ where: eq(refreshTokens.id, token.replacedById) })
+        : undefined;
+      if (successor && !successor.revokedAt && !successor.replacedById && successor.expiresAt > new Date()) {
+        lostSuccessorId = successor.id;
+      }
+    }
+    if (token.revokedAt && !lostSuccessorId) {
       await revokeFamily(token.familyId);
       await audit(db, req, { action: 'refresh_token_reuse', actorId: token.userId, entity: 'user', entityId: token.userId });
       clearRefreshCookie(res);
@@ -171,17 +186,22 @@ export function authRouter({ db, env }: AppContext) {
       throw unauthorized('This account has been deactivated.', 'ACCOUNT_INACTIVE');
     }
 
+    // Rotate the presented token, or (after a lost response) the unused successor in its place.
+    const rotateId = lostSuccessorId ?? token.id;
     const next = await db.transaction(async (tx) => {
       const [revoked] = await tx
         .update(refreshTokens)
         .set({ revokedAt: new Date() })
-        .where(and(eq(refreshTokens.id, token.id), isNull(refreshTokens.revokedAt)))
+        .where(and(eq(refreshTokens.id, rotateId), isNull(refreshTokens.revokedAt)))
         .returning({ id: refreshTokens.id });
       if (!revoked) throw unauthorized('Session refresh in progress, retry', 'REFRESH_RACE');
       const created = await createRefreshToken(tx, token.userId, token.familyId, req.get('user-agent'));
-      await tx.update(refreshTokens).set({ replacedById: created.id }).where(eq(refreshTokens.id, token.id));
+      await tx.update(refreshTokens).set({ replacedById: created.id }).where(eq(refreshTokens.id, rotateId));
       return created;
     });
+    if (lostSuccessorId) {
+      await audit(db, req, { action: 'refresh_resumed_after_lost_response', actorId: token.userId, entity: 'user', entityId: token.userId });
+    }
 
     setRefreshCookie(res, next.raw);
     res.json({ accessToken: await accessTokenFor(sessionUser), user: sessionUser } satisfies SessionResponse);

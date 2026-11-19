@@ -1,4 +1,4 @@
-import { orderEvents, orders } from '@bedex/db';
+import { orderEvents, orders, routes } from '@bedex/db';
 import { normaliseTrackingRef, postcodesMatch, trackQuerySchema } from '@bedex/shared';
 import { and, asc, eq, isNotNull } from 'drizzle-orm';
 import { Router } from 'express';
@@ -29,9 +29,14 @@ export function publicRouter({ db }: AppContext) {
         scheduledDate: true,
         timeWindowStart: true,
         timeWindowEnd: true,
+        currentRouteId: true,
       },
     });
     if (!order || !postcodesMatch(order.postcode, parsed.data.postcode)) throw notFoundGeneric();
+
+    const [route] = order.currentRouteId
+      ? await db.select({ status: routes.status }).from(routes).where(eq(routes.id, order.currentRouteId))
+      : [];
 
     const events = await db
       .select({ toStatus: orderEvents.toStatus, createdAt: orderEvents.createdAt })
@@ -40,7 +45,7 @@ export function publicRouter({ db }: AppContext) {
       .orderBy(asc(orderEvents.createdAt));
 
     // TODO(TRK-03): proof photo / driver name / live location behind admin settings.
-    res.json(toPublicTracking(order, events));
+    res.json(toPublicTracking({ ...order, routeReleased: !!route && route.status !== 'draft' }, events));
   });
 
   return router;

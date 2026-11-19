@@ -1,5 +1,5 @@
 import type { PlannerOrder, PlannerRoute } from '@bedex/shared';
-import { GripVertical, Inbox, Loader2, MapPinOff } from 'lucide-react';
+import { GripVertical, Inbox, Loader2, MapPin, MapPinOff } from 'lucide-react';
 import { useState } from 'react';
 import { StatusBadge } from '../../../components/StatusBadge';
 import { cn } from '../../../lib/cn';
@@ -17,10 +17,12 @@ interface Props {
   disabled: boolean;
   /** Whether the API is looking up addresses (needs GOOGLE_MAPS_SERVER_KEY). */
   geocoding: boolean;
+  /** Correct the address or drop a pin (ORD-07). */
+  onFixLocation: (order: PlannerOrder) => void;
 }
 
 /** RTE-01: eligible orders not yet on a route. Ticked ones go into the next optimisation. */
-export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAll, onDropFromRoute, onAddToRoute, disabled, geocoding }: Props) {
+export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAll, onDropFromRoute, onAddToRoute, disabled, geocoding, onFixLocation }: Props) {
   const [over, setOver] = useState(false);
   const editable = routes.filter((r) => r.editable);
   const plannable = orders.filter((o) => o.lat !== null && o.lng !== null);
@@ -70,7 +72,8 @@ export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAl
             return (
               <li
                 key={o.id}
-                draggable={!disabled}
+                // A stop needs a map location (RTE-08): fix it first.
+                draggable={!disabled && located}
                 onDragStart={(e) => startDrag(e, { orderId: o.id, fromRouteId: null })}
                 className="flex items-center gap-2 px-3 py-2"
               >
@@ -82,7 +85,7 @@ export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAl
                   onChange={(e) => onToggle(o.id, e.target.checked)}
                   className="h-4 w-4 rounded border-border text-brand-primary disabled:opacity-40"
                 />
-                <GripVertical className="h-4 w-4 shrink-0 cursor-grab text-slate-300" aria-hidden />
+                <GripVertical className={cn('h-4 w-4 shrink-0 text-slate-300', located ? 'cursor-grab' : 'opacity-0')} aria-hidden />
                 <div className="min-w-0 flex-1">
                   <p className="flex flex-wrap items-center gap-x-2 text-sm">
                     <span className="font-medium">{o.orderNumber}</span>
@@ -106,12 +109,23 @@ export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAl
                       ) : (
                         <span className="ml-1 inline-flex items-center gap-1 font-medium text-danger" title="The map couldn't find this address. Check the address and postcode on the order.">
                           <MapPinOff className="h-3 w-3" aria-hidden />
-                          Address not found – check it
+                          Address not found
                         </span>
                       ))}
+                    {o.geocodeStatus === 'approximate' && (
+                      <span className="ml-1 inline-flex items-center gap-1 font-medium text-warning" title="Only the postcode area was found">
+                        <MapPin className="h-3 w-3" aria-hidden />
+                        Approximate location
+                      </span>
+                    )}
                   </p>
                 </div>
-                {editable.length > 0 && (
+                {(!located || o.geocodeStatus === 'approximate') && (o.geocodeStatus !== 'pending' || !geocoding) && (
+                  <button type="button" className="btn-secondary px-2 py-1 text-xs" disabled={disabled} onClick={() => onFixLocation(o)}>
+                    Fix location
+                  </button>
+                )}
+                {editable.length > 0 && located && (
                   <select
                     aria-label={`Add ${o.orderNumber} to a route`}
                     value=""

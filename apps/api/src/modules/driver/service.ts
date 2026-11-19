@@ -1,6 +1,6 @@
-import { type Db, type Tx, attemptPhotos, deliveryAttempts, orderItems, orders, routeStops, routes } from '@bedex/db';
-import type { StopDeliveredInput } from '@bedex/shared';
-import { and, eq, max, sql } from 'drizzle-orm';
+import { type Db, type Tx, attemptPhotos, deliveryAttempts, driverLocations, orderItems, orders, routeStops, routes } from '@bedex/db';
+import { type DriverLocationInput, type StopDeliveredInput, toLondonDate } from '@bedex/shared';
+import { and, asc, desc, eq, inArray, max, sql } from 'drizzle-orm';
 import { badRequest, conflict, notFound } from '../../lib/errors';
 import type { AuthUser } from '../../lib/jwt';
 import { lockOrder, transitionOrder } from '../orders/service';
@@ -91,7 +91,7 @@ export async function completeStopDelivered(db: Db, actor: AuthUser, stopId: str
       .where(eq(deliveryAttempts.clientActionId, input.clientActionId));
     if (previous) {
       if (previous.orderId !== stop.orderId) throw conflict('DUPLICATE_ACTION', 'This update was already used for another stop');
-      return { attemptId: previous.id, replayed: true };
+      return { attemptId: previous.id, replayed: true, routeId: stop.routeId };
     }
 
     assertOpen(stop);
@@ -159,6 +159,40 @@ export async function completeStopDelivered(db: Db, actor: AuthUser, stopId: str
       .set({ completedAt: occurredAt, arrivedAt: sql`coalesce(${routeStops.arrivedAt}, ${occurredAt.toISOString()}::timestamptz)` })
       .where(eq(routeStops.id, stop.id));
 
-    return { attemptId: attempt.id, replayed: false };
+    return { attemptId: attempt.id, replayed: false, routeId: stop.routeId };
   });
+}
+
+/** A fix older than this is dropped: it says nothing about where the van is now. */
+const MAX_FIX_AGE_MS = 15 * 60_000;
+
+/**
+ * DSH-03: store a GPS fix against the driver's route that is out today (the one
+ * in progress, else the first released one). Off duty nothing is stored, so the
+ * office only ever sees drivers while they are delivering. Returns whether the
+ * app should keep sending.
+ */
+export async function recordDriverLocation(db: Db, driverId: string, input: DriverLocationInput, now = new Date()): Promise<boolean> {
+  const [route] = await db
+    .select({ id: routes.id })
+    .from(routes)
+    .where(and(eq(routes.driverId, driverId), eq(routes.date, toLondonDate(now)), inArray(routes.status, [...ACTIVE_ROUTE])))
+    .orderBy(desc(sql`${routes.status} = 'in_progress'`), asc(routes.createdAt))
+    .limit(1);
+  if (!route) return false;
+
+  const reported = input.recordedAt ? new Date(input.recordedAt) : now;
+  // A phone clock running ahead must not put the van in the future.
+  const recordedAt = reported > now ? now : reported;
+  if (now.getTime() - recordedAt.getTime() > MAX_FIX_AGE_MS) return true;
+
+  await db.insert(driverLocations).values({
+    driverId,
+    routeId: route.id,
+    lat: input.lat,
+    lng: input.lng,
+    accuracy: input.accuracy ?? null,
+    recordedAt,
+  });
+  return true;
 }

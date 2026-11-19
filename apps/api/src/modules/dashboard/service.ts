@@ -1,6 +1,6 @@
 import { type Db, deliveryAttempts, depots, driverLocations, drivers, orders, routeStops, routes, users, vans } from '@bedex/db';
-import type { ActionQueueItem, DashboardLive, DashboardRouteRow, DashboardSummary, OrderStatus } from '@bedex/shared';
-import { and, asc, count, desc, eq, inArray, isNotNull, max } from 'drizzle-orm';
+import type { ActionQueueItem, DashboardLive, DashboardRouteRow, DashboardSummary, LiveRoute, OrderStatus, RouteEndType, RouteStatus } from '@bedex/shared';
+import { and, asc, count, desc, eq, inArray, max } from 'drizzle-orm';
 import { onLondonDates } from '../../lib/time';
 
 const AWAITING_ALLOCATION: OrderStatus[] = ['awaiting_scheduling', 'in_warehouse', 'rescheduled'];
@@ -182,34 +182,123 @@ async function getActionQueue(db: Db): Promise<ActionQueueItem[]> {
   });
 }
 
-/** DSH-03: last known driver positions and stop pins for the day. */
+/** Order statuses that mean the driver has finished with a stop, whatever the outcome. */
+const FINISHED: readonly OrderStatus[] = ['delivered', 'partially_delivered', 'failed', 'returned_to_warehouse', 'cancelled'];
+
+interface LiveStopRow {
+  stopId: string;
+  routeId: string;
+  sequence: number;
+  postcode: string;
+  customerName: string;
+  status: OrderStatus;
+  eta: Date | null;
+  completedAt: Date | null;
+  lat: number | null;
+  lng: number | null;
+}
+
+interface LiveRouteRow {
+  id: string;
+  name: string;
+  status: RouteStatus;
+  driverId: string | null;
+  driverName: string | null;
+  vanName: string | null;
+  vanRegistration: string | null;
+  depotId: string;
+  endType: RouteEndType;
+  polyline: string | null;
+  plannedEnd: Date | null;
+}
+
+interface GpsFix {
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+  recordedAt: Date;
+}
+
+const isDone = (s: LiveStopRow) => s.completedAt !== null || FINISHED.includes(s.status);
+const iso = (d: Date | null) => d?.toISOString() ?? null;
+
+/**
+ * DSH-03: a route's progress for the tracking map. `stops` are in sequence order.
+ * The van is shown at its latest GPS fix, or at the last finished stop when that
+ * is newer (the driver app only sends GPS while it is open on screen).
+ */
+export function buildLiveRoute(route: LiveRouteRow, stops: LiveStopRow[], gps: GpsFix | null): LiveRoute {
+  const done = stops.filter(isDone).sort((a, b) => (a.completedAt?.getTime() ?? 0) - (b.completedAt?.getTime() ?? 0) || a.sequence - b.sequence);
+  const todo = stops.filter((s) => !isDone(s));
+  const next = todo[0] ?? null;
+  const lastStop = todo.at(-1) ?? stops.at(-1) ?? null;
+
+  const lastVisited = [...done].reverse().find((s) => s.completedAt && s.lat !== null && s.lng !== null);
+  let position: LiveRoute['position'] = null;
+  if (route.status !== 'draft') {
+    if (gps && (!lastVisited?.completedAt || gps.recordedAt >= lastVisited.completedAt)) {
+      position = { lat: gps.lat, lng: gps.lng, at: gps.recordedAt.toISOString(), source: 'gps', accuracy: gps.accuracy };
+    } else if (lastVisited?.completedAt && lastVisited.lat !== null && lastVisited.lng !== null) {
+      position = { lat: lastVisited.lat, lng: lastVisited.lng, at: lastVisited.completedAt.toISOString(), source: 'stop', accuracy: null };
+    }
+  }
+
+  return {
+    routeId: route.id,
+    name: route.name,
+    status: route.status,
+    driverId: route.driverId,
+    driverName: route.driverName,
+    vanName: route.vanName,
+    vanRegistration: route.vanRegistration,
+    depotId: route.depotId,
+    endType: route.endType,
+    polyline: route.polyline,
+    stopsTotal: stops.length,
+    stopsCompleted: done.length,
+    nextStop: next && { stopId: next.stopId, sequence: next.sequence, postcode: next.postcode, customerName: next.customerName, eta: iso(next.eta) },
+    lastStopEta: lastStop ? iso(todo.length ? lastStop.eta : (lastStop.completedAt ?? lastStop.eta)) : null,
+    plannedEnd: iso(route.plannedEnd),
+    done: done.map((s) => ({ stopId: s.stopId, sequence: s.sequence, postcode: s.postcode, status: s.status, completedAt: iso(s.completedAt) })),
+    position,
+  };
+}
+
+/** DSH-03: every route of the day with its stops, van position and progress. */
 export async function getDashboardLive(db: Db, date: string): Promise<DashboardLive> {
-  const [driverRows, stopRows, depotRows] = await Promise.all([
+  const [routeRows, stopRows, depotRows] = await Promise.all([
     db
-      .selectDistinctOn([driverLocations.driverId], {
-        driverId: driverLocations.driverId,
-        name: users.name,
-        routeId: driverLocations.routeId,
-        routeName: routes.name,
-        lat: driverLocations.lat,
-        lng: driverLocations.lng,
-        recordedAt: driverLocations.recordedAt,
+      .select({
+        id: routes.id,
+        name: routes.name,
+        status: routes.status,
+        driverId: routes.driverId,
+        driverName: users.name,
+        vanName: vans.name,
+        vanRegistration: vans.registration,
+        depotId: routes.depotId,
+        endType: routes.endType,
+        polyline: routes.polyline,
+        plannedEnd: routes.plannedEnd,
       })
-      .from(driverLocations)
-      .innerJoin(drivers, eq(drivers.id, driverLocations.driverId))
-      .innerJoin(users, eq(users.id, drivers.userId))
-      .leftJoin(routes, eq(routes.id, driverLocations.routeId))
-      .where(onLondonDates(driverLocations.recordedAt, date))
-      .orderBy(driverLocations.driverId, desc(driverLocations.recordedAt)),
+      .from(routes)
+      .leftJoin(drivers, eq(drivers.id, routes.driverId))
+      .leftJoin(users, eq(users.id, drivers.userId))
+      .leftJoin(vans, eq(vans.id, routes.vanId))
+      .where(eq(routes.date, date))
+      .orderBy(asc(routes.name)),
     db
       .select({
         stopId: routeStops.id,
         routeId: routes.id,
         routeName: routes.name,
         sequence: routeStops.sequence,
+        eta: routeStops.eta,
+        completedAt: routeStops.completedAt,
         orderId: orders.id,
         orderNumber: orders.orderNumber,
         customerName: orders.customerName,
+        postcode: orders.postcode,
         status: orders.status,
         lat: orders.lat,
         lng: orders.lng,
@@ -217,7 +306,7 @@ export async function getDashboardLive(db: Db, date: string): Promise<DashboardL
       .from(routeStops)
       .innerJoin(routes, eq(routes.id, routeStops.routeId))
       .innerJoin(orders, eq(orders.id, routeStops.orderId))
-      .where(and(eq(routes.date, date), isNotNull(orders.lat), isNotNull(orders.lng)))
+      .where(eq(routes.date, date))
       .orderBy(asc(routes.name), asc(routeStops.sequence)),
     db
       .select({ id: depots.id, name: depots.name, lat: depots.lat, lng: depots.lng })
@@ -225,11 +314,43 @@ export async function getDashboardLive(db: Db, date: string): Promise<DashboardL
       .where(eq(depots.active, true)),
   ]);
 
+  const routeIds = routeRows.map((r) => r.id);
+  const fixes = routeIds.length
+    ? await db
+        .selectDistinctOn([driverLocations.routeId], {
+          routeId: driverLocations.routeId,
+          lat: driverLocations.lat,
+          lng: driverLocations.lng,
+          accuracy: driverLocations.accuracy,
+          recordedAt: driverLocations.recordedAt,
+        })
+        .from(driverLocations)
+        .where(and(inArray(driverLocations.routeId, routeIds), onLondonDates(driverLocations.recordedAt, date)))
+        .orderBy(driverLocations.routeId, desc(driverLocations.recordedAt))
+    : [];
+
+  const liveRoutes = routeRows.map((r) =>
+    buildLiveRoute(
+      r,
+      stopRows.filter((s) => s.routeId === r.id),
+      fixes.find((f) => f.routeId === r.id) ?? null,
+    ),
+  );
+
   return {
     date,
-    drivers: driverRows.map((d) => ({ ...d, recordedAt: d.recordedAt.toISOString() })),
-    // isNotNull above guarantees coordinates; the filter narrows the type.
-    stops: stopRows.flatMap((s) => (s.lat !== null && s.lng !== null ? [{ ...s, lat: s.lat, lng: s.lng }] : [])),
+    // Kept for the plain list shown when the map can't load.
+    drivers: liveRoutes.flatMap((r) =>
+      r.position && r.driverId
+        ? [{ driverId: r.driverId, name: r.driverName ?? r.name, routeId: r.routeId, routeName: r.name, lat: r.position.lat, lng: r.position.lng, recordedAt: r.position.at }]
+        : [],
+    ),
+    stops: stopRows.flatMap((s) =>
+      s.lat !== null && s.lng !== null
+        ? [{ ...s, lat: s.lat, lng: s.lng, eta: iso(s.eta), completedAt: iso(s.completedAt) }]
+        : [],
+    ),
+    routes: liveRoutes,
     depots: depotRows,
   };
 }

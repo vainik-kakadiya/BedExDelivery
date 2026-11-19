@@ -18,6 +18,7 @@ import { DashboardPage } from './pages/office/dashboard/DashboardPage';
 import { DriversPage } from './pages/office/fleet/DriversPage';
 import { VansPage } from './pages/office/fleet/VansPage';
 import { PlannerPage } from './pages/office/planner/PlannerPage';
+import { TrackingPage } from './pages/office/tracking/TrackingPage';
 import { useAuth } from './stores/auth';
 
 export function App() {
@@ -53,6 +54,7 @@ function AppRoutes() {
         <Route path="orders/import" element={<ImportOrdersPage />} />
         <Route path="orders/:id" element={<OrderDetailPage />} />
         <Route path="planner" element={<PlannerPage />} />
+        <Route path="tracking" element={<TrackingPage />} />
         <Route path="drivers" element={<DriversPage />} />
         <Route path="vans" element={<VansPage />} />
         <Route path="depots" element={<DepotsPage />} />

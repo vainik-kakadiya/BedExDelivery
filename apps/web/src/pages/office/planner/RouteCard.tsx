@@ -1,4 +1,4 @@
-import { ROUTE_END_TYPES, ROUTE_END_TYPE_LABELS, type PlannerRoute, type PlannerState, type RouteEndType, type RouteStatus } from '@bedex/shared';
+import { ROUTE_END_TYPES, ROUTE_END_TYPE_LABELS, type PlannerOrder, type PlannerRoute, type PlannerState, type RouteEndType, type RouteStatus } from '@bedex/shared';
 import { AlertTriangle, ChevronDown, ChevronUp, GripVertical, RefreshCw, Send, Sparkles, Trash2, Undo2, X } from 'lucide-react';
 import { type CSSProperties, type DragEvent, useState } from 'react';
 import { ExportMenu } from '../../../components/ExportMenu';
@@ -25,6 +25,8 @@ export interface RouteActions {
   remove: (route: PlannerRoute) => void;
   recalculate: (route: PlannerRoute) => void;
   reoptimise: (route: PlannerRoute) => void;
+  /** Correct the address or drop a pin (ORD-07). */
+  fixLocation: (order: PlannerOrder) => void;
 }
 
 interface Props {
@@ -222,7 +224,16 @@ export function RouteCard({ route, colour, state, actions, disabled, highlighted
                 </p>
                 <p className="truncate text-xs text-slate-500">
                   {s.order.postcode} · {s.order.loadUnits} units
-                  {s.order.lat === null && <span className="ml-1 font-medium text-danger">No map location</span>}
+                  {(s.order.lat === null || s.order.geocodeStatus === 'approximate') && (
+                    <button
+                      type="button"
+                      className={cn('ml-1 font-medium underline-offset-2 hover:underline', s.order.lat === null ? 'text-danger' : 'text-warning')}
+                      title="Correct the address or drop a pin"
+                      onClick={() => actions.fixLocation(s.order)}
+                    >
+                      {s.order.lat === null ? 'No map location – fix' : 'Approximate location – fix'}
+                    </button>
+                  )}
                 </p>
               </div>
               <div className="text-right text-xs">

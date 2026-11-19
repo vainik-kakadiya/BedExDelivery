@@ -19,6 +19,7 @@ const fullOrder = {
   deliveryNotes: 'DRIVER: leave with neighbour at 3',
   accessInstructions: 'Gate code 1234',
   currentRouteId: 'f3a1c1de-0000-4000-8000-000000000002',
+  routeReleased: true,
 };
 
 const events = [
@@ -63,5 +64,27 @@ describe('toPublicTracking', () => {
 
   it('hides the date while the order is not booked onto a day', () => {
     expect(toPublicTracking({ ...fullOrder, status: 'returned_to_warehouse' }, []).deliveryDate).toBeNull();
+  });
+
+  it('shows nothing about a draft route until it is released', () => {
+    const planned = events.slice(0, 4);
+    const draft = toPublicTracking({ ...fullOrder, status: 'scheduled', routeReleased: false }, planned);
+    expect(draft.status).toBe('in_warehouse');
+    expect(draft.statusLabel).toBe('Preparing for delivery');
+    expect(draft.deliveryDate).toBeNull();
+    expect(draft.timeline.map((t) => t.status)).toEqual(['awaiting_scheduling']);
+
+    const released = toPublicTracking({ ...fullOrder, status: 'scheduled', routeReleased: true }, planned);
+    expect(released.statusLabel).toBe('Delivery scheduled');
+    expect(released.deliveryDate).toBe('2026-11-20');
+  });
+
+  it('keeps the agreed date of a rescheduled order while it sits on a draft', () => {
+    const draft = toPublicTracking({ ...fullOrder, status: 'scheduled', routeReleased: false }, [
+      { toStatus: 'rescheduled', createdAt: new Date('2026-11-12T09:00:00Z') },
+      { toStatus: 'scheduled', createdAt: new Date('2026-11-13T09:00:00Z') },
+    ]);
+    expect(draft.statusLabel).toBe('Delivery rescheduled');
+    expect(draft.deliveryDate).toBe('2026-11-20');
   });
 });

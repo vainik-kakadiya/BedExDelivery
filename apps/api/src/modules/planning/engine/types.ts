@@ -85,8 +85,12 @@ export interface LegsResult {
 export interface RoutingEngine {
   readonly optimiserKind: RoutingEngineKind;
   readonly travelKind: RoutingEngineKind;
-  /** RTE-04: assign and order shipments across vehicles. */
-  optimise(model: PlanningModel): Promise<OptimiseResult>;
+  /**
+   * RTE-04: assign and order shipments across vehicles. `initial` (one list of
+   * order ids per vehicle) is a starting plan the built-in optimiser will only
+   * improve on; Google plans from scratch.
+   */
+  optimise(model: PlanningModel, options?: { initial?: string[][] }): Promise<OptimiseResult>;
   /** RTE-07: road distance/time for each consecutive pair of points, in order. */
   legs(points: LatLng[]): Promise<LegsResult>;
 }

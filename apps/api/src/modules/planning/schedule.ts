@@ -90,6 +90,21 @@ export interface WarningInput {
 const fmt = (n: number) => (Math.round(n * 10) / 10).toLocaleString('en-GB');
 const list = (xs: string[]) => (xs.length <= 3 ? xs.join(', ') : `${xs.slice(0, 3).join(', ')} +${xs.length - 3} more`);
 
+/** Each capacity the load exceeds, e.g. "14/12 units". Empty when it fits (or there is no van). */
+export function overCapacity(
+  van: { capacityUnits: number | null; capacityKg: number | null; capacityM3: number | null } | null | undefined,
+  load: { units: number; kg: number; m3: number },
+): string[] {
+  if (!van) return [];
+  const over: string[] = [];
+  // A hair of tolerance so 0.1 + 0.2-style float sums don't block a full van.
+  const exceeds = (value: number, cap: number | null) => cap !== null && value > cap + 1e-6;
+  if (exceeds(load.units, van.capacityUnits)) over.push(`${fmt(load.units)}/${fmt(van.capacityUnits!)} units`);
+  if (exceeds(load.kg, van.capacityKg)) over.push(`${fmt(load.kg)}/${fmt(van.capacityKg!)} kg`);
+  if (exceeds(load.m3, van.capacityM3)) over.push(`${fmt(load.m3)}/${fmt(van.capacityM3!)} m³`);
+  return over;
+}
+
 /** RTE-08 warnings for one route. */
 export function routeWarnings(r: WarningInput): RouteWarning[] {
   const w: RouteWarning[] = [];
@@ -97,11 +112,13 @@ export function routeWarnings(r: WarningInput): RouteWarning[] {
   if (!r.driverId) w.push({ code: 'no_driver', message: 'No driver assigned' });
   if (!r.vanId) w.push({ code: 'no_van', message: 'No van assigned' });
 
-  const over: string[] = [];
-  if (r.capacityUnits !== null && r.loadUnits > r.capacityUnits) over.push(`${fmt(r.loadUnits)}/${fmt(r.capacityUnits)} units`);
-  if (r.capacityKg !== null && r.loadKg > r.capacityKg) over.push(`${fmt(r.loadKg)}/${fmt(r.capacityKg)} kg`);
-  if (r.capacityM3 !== null && r.loadM3 > r.capacityM3) over.push(`${fmt(r.loadM3)}/${fmt(r.capacityM3)} m³`);
-  if (over.length) w.push({ code: 'over_capacity', message: `Over van capacity: ${over.join(', ')}` });
+  const over = overCapacity(
+    r.vanId ? { capacityUnits: r.capacityUnits, capacityKg: r.capacityKg, capacityM3: r.capacityM3 } : null,
+    { units: r.loadUnits, kg: r.loadKg, m3: r.loadM3 },
+  );
+  if (over.length) {
+    w.push({ code: 'over_capacity', message: `Over van capacity: ${over.join(', ')}${r.status === 'draft' ? ' – it can’t be released like this' : ''}` });
+  }
 
   const late = r.stops.filter((s) => s.etaWindowOk === false);
   if (late.length) {

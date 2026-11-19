@@ -1,8 +1,8 @@
 import { type DashboardLive, type DashboardSummary, formatUkDate, toLondonDate } from '@bedex/shared';
 import { useQuery } from '@tanstack/react-query';
-import { Search } from 'lucide-react';
+import { Maximize2, Search } from 'lucide-react';
 import { type FormEvent, type ReactNode, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { LiveMap } from '../../../components/LiveMap';
 import { ApiError, api } from '../../../lib/api';
 import { FALLBACK_POLL_MS, useLiveStatus } from '../../../lib/live';
@@ -108,14 +108,23 @@ export function DashboardPage() {
           <Panel
             title="Live map"
             aside={
-              liveData.data && (
-                <span className="text-xs text-slate-500">
-                  {liveData.data.drivers.length} drivers · {liveData.data.stops.length} stops
-                </span>
-              )
+              <span className="flex items-center gap-3 text-xs text-slate-500">
+                {liveData.data && (
+                  <span>
+                    {liveData.data.routes.length} vans · {liveData.data.stops.length} stops
+                  </span>
+                )}
+                <Link
+                  to={isToday ? '/office/tracking' : `/office/tracking?date=${date}`}
+                  className="flex items-center gap-1 font-medium text-brand-primary hover:underline"
+                >
+                  <Maximize2 className="h-3.5 w-3.5" aria-hidden />
+                  Full tracking
+                </Link>
+              </span>
             }
           >
-            <LiveMap data={liveData.data} />
+            <LiveMap data={liveData.data} className="rounded-b-lg" />
           </Panel>
         </div>
       </div>

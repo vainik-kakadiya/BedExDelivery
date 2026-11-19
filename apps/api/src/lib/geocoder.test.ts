@@ -47,4 +47,39 @@ describe('googleGeocoder', () => {
     }) as unknown as typeof fetch;
     expect(await googleGeocoder('key', failing)(address)).toMatchObject({ kind: 'error', retryable: true });
   });
+
+  it('falls back to the postcode, then the postcode district, marked approximate', async () => {
+    const seen: string[] = [];
+    const replies = [
+      { status: 'ZERO_RESULTS', results: [] },
+      { status: 'OK', results: [{ geometry: { location: { lat: 51.25, lng: 0.52 }, location_type: 'APPROXIMATE' }, types: ['postal_code'] }] },
+    ];
+    const sequence = (async (url: string) => {
+      seen.push(url);
+      return new Response(JSON.stringify(replies.shift() ?? { status: 'ZERO_RESULTS' }));
+    }) as unknown as typeof fetch;
+    expect(await googleGeocoder('key', sequence)(address)).toEqual({ kind: 'ok', lat: 51.25, lng: 0.52, precise: false });
+    expect(new URL(seen[1]!).searchParams.get('address')).toBe('ME15 6JY');
+  });
+
+  it('only accepts a postcode-area match for the district step', async () => {
+    const seen: string[] = [];
+    const replies = [
+      { status: 'ZERO_RESULTS' },
+      { status: 'ZERO_RESULTS' },
+      {
+        status: 'OK',
+        results: [
+          { geometry: { location: { lat: 9, lng: 9 }, location_type: 'GEOMETRIC_CENTER' }, types: ['establishment'] },
+          { geometry: { location: { lat: 51.2, lng: 0.5 }, location_type: 'APPROXIMATE' }, types: ['postal_code_prefix', 'postal_code'] },
+        ],
+      },
+    ];
+    const sequence = (async (url: string) => {
+      seen.push(url);
+      return new Response(JSON.stringify(replies.shift()));
+    }) as unknown as typeof fetch;
+    expect(await googleGeocoder('key', sequence)(address)).toEqual({ kind: 'ok', lat: 51.2, lng: 0.5, precise: false });
+    expect(new URL(seen[2]!).searchParams.get('address')).toBe('ME15, Maidstone');
+  });
 });

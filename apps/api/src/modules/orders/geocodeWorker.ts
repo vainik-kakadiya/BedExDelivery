@@ -48,7 +48,7 @@ export function startGeocodeWorker({ db, geocoder, changes, logger }: { db: Db; 
             .update(orders)
             .set(
               result.kind === 'ok'
-                ? { lat: result.lat, lng: result.lng, geocodeStatus: 'ok' }
+                ? { lat: result.lat, lng: result.lng, geocodeStatus: result.precise ? 'ok' : 'approximate' }
                 : { lat: null, lng: null, geocodeStatus: 'failed' },
             )
             .where(

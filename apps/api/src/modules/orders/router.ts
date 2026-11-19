@@ -6,6 +6,7 @@ import {
   orderCreateSchema,
   orderDeleteSchema,
   orderListQuerySchema,
+  orderLocationSchema,
   orderStatusChangeSchema,
   orderUpdateSchema,
   suggestImportMapping,
@@ -18,7 +19,8 @@ import { badRequest, notFound } from '../../lib/errors';
 import { readSpreadsheet } from '../../lib/spreadsheet';
 import { currentUser, requireAuth, requireRole } from '../../middleware/auth';
 import { commitImport, previewImport } from './import';
-import { changeOrderStatus, createOrder, deleteOrders, getOrder, getOrderHistory, listOrders, updateOrder } from './service';
+import { recalculateRoute } from '../planning/service';
+import { changeOrderStatus, createOrder, deleteOrders, getOrder, getOrderHistory, listOrders, setOrderLocation, updateOrder } from './service';
 
 const uuid = z.string().uuid();
 const parseId = (raw: string | undefined): string => {
@@ -27,7 +29,7 @@ const parseId = (raw: string | undefined): string => {
   return parsed.data;
 };
 
-export function ordersRouter({ db, env, storage }: AppContext) {
+export function ordersRouter({ db, env, storage, routing }: AppContext) {
   const router = Router();
   router.use(requireAuth(env.JWT_ACCESS_SECRET), requireRole('admin', 'office'));
 
@@ -87,6 +89,13 @@ export function ordersRouter({ db, env, storage }: AppContext) {
 
   router.patch('/:id', async (req, res) => {
     res.json(await updateOrder(db, parseId(req.params.id), orderUpdateSchema.parse(req.body), currentUser(req)));
+  });
+
+  // ORD-07: drop a pin when the address can't be found (or only its postcode area).
+  router.put('/:id/location', async (req, res) => {
+    const { routeToRecalculate } = await setOrderLocation(db, parseId(req.params.id), orderLocationSchema.parse(req.body), currentUser(req));
+    if (routeToRecalculate) await recalculateRoute({ db, routing }, routeToRecalculate);
+    res.status(204).end();
   });
 
   router.post('/:id/status', async (req, res) => {

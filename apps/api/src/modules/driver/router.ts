@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { routes } from '@bedex/db';
-import { stopDeliveredSchema, toLondonDate } from '@bedex/shared';
+import { driverLocationSchema, stopDeliveredSchema, toLondonDate } from '@bedex/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import express, { Router } from 'express';
 import { z } from 'zod';
@@ -8,7 +8,9 @@ import type { AppContext } from '../../context';
 import { AppError, badRequest, notFound } from '../../lib/errors';
 import { changeStream } from '../../lib/sse';
 import { currentDriverId, currentUser, requireAuth, requireRole } from '../../middleware/auth';
-import { completeStopDelivered, proofPhotoTarget } from './service';
+import { limiter } from '../../middleware/rateLimit';
+import { recalculateRoute } from '../planning/service';
+import { completeStopDelivered, proofPhotoTarget, recordDriverLocation } from './service';
 
 const stopIdParam = (raw: unknown) => {
   const parsed = z.string().uuid().safeParse(String(raw));
@@ -52,7 +54,7 @@ export const DRIVER_ORDER_COLUMNS = {
   requiresSignature: true,
 } as const;
 
-export function driverRouter({ db, env, changes, storage }: AppContext) {
+export function driverRouter({ db, env, changes, storage, routing }: AppContext) {
   const router = Router();
   router.use(requireAuth(env.JWT_ACCESS_SECRET), requireRole('driver'));
 
@@ -126,10 +128,27 @@ export function driverRouter({ db, env, changes, storage }: AppContext) {
   router.post('/stops/:stopId/complete', async (req, res) => {
     const stopId = stopIdParam(req.params.stopId);
     const input = stopDeliveredSchema.parse(req.body);
-    res.json(await completeStopDelivered(db, currentUser(req), stopId, input));
+    const result = await completeStopDelivered(db, currentUser(req), stopId, input);
+    res.json(result);
+    // DSH-03: re-time the stops still to do from here and now, so the office sees
+    // a real "last stop" ETA. Best effort: the delivery is already saved.
+    if (!result.replayed) {
+      void retimeRoute(result.routeId).catch((err: unknown) => req.log.warn({ err, routeId: result.routeId }, 'Could not update ETAs after a delivery'));
+    }
   });
 
-  // TODO(weeks 4–5): failed / partial outcomes, POST /routes/:id/end, /location —
+  async function retimeRoute(id: string) {
+    const [route] = await db.select({ status: routes.status }).from(routes).where(eq(routes.id, id));
+    if (route?.status === 'in_progress') await recalculateRoute({ db, routing }, id);
+  }
+
+  // DSH-03: GPS from the app while a route is out (sent about every 30 s while it is open).
+  router.post('/location', limiter({ windowMs: 60_000, limit: 30 }), async (req, res) => {
+    const input = driverLocationSchema.parse(req.body);
+    res.json({ tracking: await recordDriverLocation(db, currentDriverId(req), input) });
+  });
+
+  // TODO(weeks 4–5): failed / partial outcomes, POST /routes/:id/end —
   // each must re-check that the route/stop belongs to currentDriverId(req).
 
   return router;

@@ -71,39 +71,67 @@ export async function downloadFile(path: string): Promise<void> {
 
 // ---------- session ----------
 
-let refreshing: Promise<boolean> | null = null;
+/**
+ * - ok: new access token.
+ * - signed_out: the server rejected the refresh cookie (401); the session is over.
+ * - unavailable: network down, API restarting (502), overloaded (5xx) or rate limited.
+ *   The cookie may still be good, so the session is kept.
+ */
+type RefreshOutcome = 'ok' | 'signed_out' | 'unavailable';
 
-/** Rotate the refresh cookie for a new access token. Concurrent callers share one request. */
-export function refreshSession(): Promise<boolean> {
+let refreshing: Promise<RefreshOutcome> | null = null;
+
+function refreshOnce(): Promise<RefreshOutcome> {
   refreshing ??= doRefresh().finally(() => {
     refreshing = null;
   });
   return refreshing;
 }
 
-async function doRefresh(retry = true): Promise<boolean> {
-  try {
-    const res = await fetch(`${BASE}/auth/refresh`, { method: 'POST', credentials: 'include' });
-    if (res.ok) {
-      useAuth.getState().setSession((await res.json()) as SessionResponse);
-      return true;
-    }
-    const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
-    // Another tab rotated the token at the same moment; its new cookie is ours too.
-    if (body?.code === 'REFRESH_RACE' && retry) {
-      await new Promise((r) => setTimeout(r, 400));
-      return doRefresh(false);
-    }
-  } catch {
-    // Network failure: keep the current state so offline drivers aren't logged out.
-    return false;
-  }
-  useAuth.getState().clear();
-  return false;
+/** Rotate the refresh cookie for a new access token. Concurrent callers share one request. */
+export async function refreshSession(): Promise<boolean> {
+  return (await refreshOnce()) === 'ok';
 }
 
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function doRefresh(retry = true): Promise<RefreshOutcome> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/auth/refresh`, { method: 'POST', credentials: 'include' });
+  } catch {
+    // Network failure: keep the current state so offline drivers aren't logged out.
+    return 'unavailable';
+  }
+  if (res.ok) {
+    useAuth.getState().setSession((await res.json()) as SessionResponse);
+    return 'ok';
+  }
+  // Only a 401 means the session is really over. A deploy restart (502), a database
+  // blip (500) or the rate limiter (429) must not sign anyone out.
+  if (res.status !== 401) return 'unavailable';
+  const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
+  // Another tab rotated the token at the same moment; its new cookie is ours too.
+  if (body?.code === 'REFRESH_RACE' && retry) {
+    await wait(400);
+    return doRefresh(false);
+  }
+  useAuth.getState().clear();
+  return 'signed_out';
+}
+
+/** Back-off between start-up attempts while the API can't be reached (≈ 30 s in total). */
+const RESTORE_RETRY_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+
+/** On page load / app start: sign back in from the refresh cookie, riding out a server restart. */
 export async function restoreSession(): Promise<void> {
-  if (!(await refreshSession()) && useAuth.getState().status === 'unknown') useAuth.getState().clear();
+  for (const delay of [0, ...RESTORE_RETRY_MS]) {
+    if (delay) await wait(delay);
+    const outcome = await refreshOnce();
+    if (outcome !== 'unavailable') return;
+    if (useAuth.getState().status !== 'unknown') return;
+  }
+  if (useAuth.getState().status === 'unknown') useAuth.getState().clear();
 }
 
 export async function login(input: LoginInput): Promise<SessionResponse> {

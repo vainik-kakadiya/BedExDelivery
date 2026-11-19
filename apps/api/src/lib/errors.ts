@@ -44,6 +44,8 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
   }
 
   if (status >= 500) req.log?.error({ err }, 'Unhandled error');
+  // The request log line shows the code and message (see app.ts).
+  res.locals.errorBody = body;
   res.status(status).json(body);
 };
 

@@ -38,8 +38,15 @@ describe('travel estimate', () => {
   it('adds road factor, urban speed and parking time', () => {
     const leg = estimateLeg(DEPOT, { lat: 51.5074, lng: -0.1278 });
     expect(leg.meters).toBeGreaterThan(13_000);
-    expect(leg.seconds / 60).toBeGreaterThan(30);
+    expect(leg.seconds / 60).toBeGreaterThan(25);
     expect(estimateLeg(DEPOT, DEPOT)).toEqual({ meters: 0, seconds: 0 });
+  });
+
+  it('drives long legs at main-road speeds, not town speed', () => {
+    // London → Birmingham: ~160 km straight line, ~2h 15m by road for a van.
+    const minutes = estimateLeg(DEPOT, { lat: 52.4862, lng: -1.8904 }).seconds / 60;
+    expect(minutes).toBeGreaterThan(120);
+    expect(minutes).toBeLessThan(220);
   });
 });
 
@@ -103,9 +110,21 @@ describe('optimiseLocally', () => {
   });
 
   it('beats a naive order on distance', () => {
-    const naive = simulate(vehicle('a', { capacity: null }), ring);
+    // Every 5th stop round the ring: criss-crosses the area the way an unplanned list does.
+    const scrambled = ring.map((_, i) => ring[(i * 5) % ring.length]!);
+    const naive = simulate(vehicle('a', { capacity: null }), scrambled);
     const optimised = optimiseLocally({ shipments: ring, vehicles: [vehicle('a', { capacity: null })] });
     expect(optimised.routes[0]!.distanceMeters).toBeLessThan(naive.meters);
+  });
+
+  it('never returns a worse plan than the one it starts from', () => {
+    const v = vehicle('a', { capacity: null });
+    const current = ring.map((s) => s.orderId);
+    const before = simulate(v, ring);
+    const result = optimiseLocally({ shipments: ring, vehicles: [v] }, { initial: [current] });
+    const after = result.routes[0]!;
+    expect(after.visits).toHaveLength(ring.length);
+    expect(after.travelSeconds + after.distanceMeters / 1000).toBeLessThanOrEqual(before.seconds + before.meters / 1000);
   });
 
   it('handles 150 stops / 8 vans quickly (PRD §10)', () => {

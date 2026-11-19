@@ -9,7 +9,8 @@ export type Role = (typeof ROLES)[number];
 export const ORDER_SOURCES = ['manual', 'import', 'shopify', 'migration'] as const;
 export type OrderSource = (typeof ORDER_SOURCES)[number];
 
-export const GEOCODE_STATUSES = ['pending', 'ok', 'failed', 'manual'] as const;
+/** approximate = only the postcode (or its district) was found; manual = pin dropped by the office. */
+export const GEOCODE_STATUSES = ['pending', 'ok', 'approximate', 'failed', 'manual'] as const;
 export type GeocodeStatus = (typeof GEOCODE_STATUSES)[number];
 
 export const ROUTE_END_TYPES = ['depot', 'driver_home', 'last_stop'] as const;

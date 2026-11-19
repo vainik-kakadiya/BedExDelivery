@@ -2,6 +2,7 @@ import {
   ROUTE_END_TYPES,
   ROUTE_END_TYPE_LABELS,
   type OptimiseJob,
+  type PlannerOrder,
   type PlannerRoute,
   type PlannerState,
   type RouteEndType,
@@ -20,6 +21,7 @@ import { useNow } from '../../../lib/hooks';
 import { FALLBACK_POLL_MS, useLiveStatus } from '../../../lib/live';
 import { MAPS_KEY, PlannerMap } from './PlannerMap';
 import { type RouteActions, RouteCard } from './RouteCard';
+import { LocationDialog } from './LocationDialog';
 import { UnassignedPanel } from './UnassignedPanel';
 import { type VehicleChoice, VehiclesPanel } from './VehiclesPanel';
 import { type DragPayload, insertInto, routeColour } from './shared';
@@ -71,6 +73,7 @@ export function PlannerPage() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ title: string; items: string[] } | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
+  const [fixing, setFixing] = useState<PlannerOrder | null>(null);
 
   async function run(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
@@ -164,11 +167,18 @@ export function PlannerPage() {
       if (ok) void run(`Deleting ${route.name}`, () => api(`/routes/${route.id}`, { method: 'DELETE' }));
     },
     recalculate: (route) => void run(`Recalculating ${route.name}`, () => api(`/routes/${route.id}/recalculate`, { method: 'POST' })),
+    fixLocation: (order) => setFixing(order),
     reoptimise: async (route) => {
       if (!(await confirmReleased(route))) return;
       void run(`Re-optimising ${route.name}`, async () => {
-        const res = await api<{ skipped: { orderNumber: string; reason: string }[] }>(`/routes/${route.id}/reoptimise`, { method: 'POST' });
-        if (res.skipped.length) setNotice({ title: `${route.name}: some stops don't fit`, items: res.skipped.map((s) => `${s.orderNumber}: ${s.reason}`) });
+        const res = await api<{ skipped: { orderNumber: string; reason: string }[]; changed: boolean }>(`/routes/${route.id}/reoptimise`, {
+          method: 'POST',
+        });
+        if (!res.changed) {
+          setNotice({ title: `${route.name} is already in the best order found – nothing changed`, items: [] });
+        } else if (res.skipped.length) {
+          setNotice({ title: `${route.name}: some stops don't fit`, items: res.skipped.map((s) => `${s.orderNumber}: ${s.reason}`) });
+        }
       });
     },
   };
@@ -284,6 +294,14 @@ export function PlannerPage() {
   return (
     // Desktop: fill the viewport with independently scrolling columns. Small screens: normal page scroll.
     <div className="flex flex-col gap-3 lg:h-[calc(100dvh-3rem)]">
+      {fixing && (
+        <LocationDialog
+          order={fixing}
+          fallbackCentre={depot ? { lat: depot.lat, lng: depot.lng } : { lat: 51.5072, lng: -0.1276 }}
+          onClose={() => setFixing(null)}
+          onSaved={() => void queryClient.invalidateQueries({ queryKey: ['planner', date] })}
+        />
+      )}
       {/* Toolbar */}
       <div className="flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
@@ -339,7 +357,7 @@ export function PlannerPage() {
       </div>
 
       {/* Status banners */}
-      {state?.engines.optimiser === 'estimate' && (
+      {state?.engines.travel === 'estimate' && (
         <p className="shrink-0 rounded-md bg-warning/10 px-3 py-2 text-xs text-warning">
           Using estimated travel times (straight-line distance at urban van speeds). Add Google credentials to plan with real road times – see README.
         </p>
@@ -386,12 +404,14 @@ export function PlannerPage() {
               <X className="h-4 w-4" />
             </button>
           </p>
-          <ul className="mt-1 list-disc pl-8 text-xs">
-            {notice.items.slice(0, 10).map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-            {notice.items.length > 10 && <li>…and {notice.items.length - 10} more</li>}
-          </ul>
+          {notice.items.length > 0 && (
+            <ul className="mt-1 list-disc pl-8 text-xs">
+              {notice.items.slice(0, 10).map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+              {notice.items.length > 10 && <li>…and {notice.items.length - 10} more</li>}
+            </ul>
+          )}
         </div>
       )}
       {state?.warnings
@@ -434,6 +454,7 @@ export function PlannerPage() {
               onToggleAll={(include) => setExcluded(include ? new Set() : new Set(state.unassigned.map((o) => o.id)))}
               onDropFromRoute={takeOff}
               onAddToRoute={addTo}
+              onFixLocation={setFixing}
             />
             {MAPS_KEY && routesList}
           </div>

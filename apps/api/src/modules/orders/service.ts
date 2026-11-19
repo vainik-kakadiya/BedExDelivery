@@ -19,6 +19,7 @@ import {
   type OrderListItem,
   type OrderHistory,
   type OrderListQuery,
+  type OrderLocationInput,
   type OrderStatus,
   type OrderStatusChangeInput,
   type OrderUpdateInput,
@@ -381,6 +382,34 @@ function normaliseForDiff(v: unknown): unknown {
   if (v === undefined || v === null) return null;
   if (typeof v === 'string' && /^\d{2}:\d{2}:00$/.test(v)) return v.slice(0, 5);
   return v;
+}
+
+// ---------- map location (ORD-07) ----------
+
+/**
+ * Pin an order to an exact point when the address lookup failed or only found
+ * the postcode area. Returns the route to re-time, if the order is on one that
+ * hasn't finished.
+ */
+export async function setOrderLocation(db: Db, id: string, input: OrderLocationInput, actor: AuthUser): Promise<{ routeToRecalculate: string | null }> {
+  return db.transaction(async (tx) => {
+    const order = await lockOrder(tx, id);
+    if (isFinalStatus(order.status)) {
+      throw conflict('ORDER_LOCKED', `"${ORDER_STATUS_META[order.status].label}" orders can't be moved on the map`);
+    }
+    await tx.update(orders).set({ lat: input.lat, lng: input.lng, geocodeStatus: 'manual' }).where(eq(orders.id, id));
+    await tx.insert(orderEvents).values({
+      orderId: id,
+      actorId: actor.id,
+      actorRole: actor.role,
+      type: 'location_set',
+      routeId: order.currentRouteId,
+      payload: { lat: input.lat, lng: input.lng, previous: order.lat !== null ? { lat: order.lat, lng: order.lng, status: order.geocodeStatus } : null },
+    });
+    if (!order.currentRouteId) return { routeToRecalculate: null };
+    const [route] = await tx.select({ status: routes.status }).from(routes).where(eq(routes.id, order.currentRouteId));
+    return { routeToRecalculate: route && route.status !== 'completed' ? order.currentRouteId : null };
+  });
 }
 
 // ---------- status ----------

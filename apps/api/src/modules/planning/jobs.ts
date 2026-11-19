@@ -33,15 +33,26 @@ export class OptimiseJobs {
     };
     this.jobs.set(job.id, job);
 
+    // How long each phase took, logged when the job ends (e.g. to spot a slow database).
+    const timings: Record<string, number> = {};
+    let phaseStarted = Date.now();
+    const endPhase = () => {
+      timings[job.phase] = (timings[job.phase] ?? 0) + Date.now() - phaseStarted;
+      phaseStarted = Date.now();
+    };
+
     run((phase) => {
+      endPhase();
       job.phase = phase;
     })
       .then((result) => {
+        endPhase();
         job.status = 'done';
         job.phase = 'Done';
         job.result = result;
       })
       .catch((err: unknown) => {
+        endPhase();
         job.status = 'failed';
         job.phase = 'Failed';
         // Our own errors and Google API errors are safe and useful to show; anything else isn't.
@@ -51,6 +62,10 @@ export class OptimiseJobs {
       })
       .finally(() => {
         job.finishedAt = new Date().toISOString();
+        this.logger?.info(
+          { jobId: job.id, date, status: job.status, totalMs: Date.parse(job.finishedAt) - Date.parse(job.startedAt), phasesMs: timings },
+          'Optimisation job finished',
+        );
       });
     return job;
   }

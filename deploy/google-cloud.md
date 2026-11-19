@@ -64,6 +64,26 @@ If your keys are restricted (they should be):
 - `GOOGLE_MAPS_SERVER_KEY`: under *Application restrictions → IP addresses*, add the VM's static IP.
 - `VITE_GOOGLE_MAPS_BROWSER_KEY`: under *Website restrictions*, add `https://<your-sslip-address>/*`.
 
+## 6. Google route optimisation (no key file needed)
+
+Google's Route Optimization API plans much better routes than the built-in optimiser, because it uses real roads. It needs a service account. Many organisations block service-account **keys** ("Service account key creation is disabled"), but on this VM no key is needed: the API uses the VM's own service account.
+
+1. **APIs & Services → Library**: enable the **Route Optimization API** in the VM's project.
+2. **IAM & Admin → IAM**: find the VM's service account (Compute Engine → VM instances → click the VM → *API and identity management*; by default it is `<number>-compute@developer.gserviceaccount.com`). Click ✏️ → **Add another role** → **Route Optimization Editor** → **Save**.
+3. **Let the VM use Cloud APIs**: Compute Engine → VM instances → click the VM → **Stop**, then **Edit** → *Security and access → Access scopes* → **Allow full access to all Cloud APIs** → **Save** → **Start**. (The VM's IP stays the same because it is static.)
+4. In `~/bedex/.env`, set `GOOGLE_CLOUD_PROJECT_ID` to the project ID and leave `GOOGLE_SERVICE_ACCOUNT_JSON` empty. Then `docker compose up -d`.
+
+`docker compose logs api | grep -i "route optimisation"` should show `Route optimisation: google (using the VM's service account)`. If it says the access scopes don't include Cloud APIs, step 3 didn't take effect.
+
+## Speed: put the VM next to the database
+
+Every database query travels from the VM to Supabase and back. A VM in the US with the database in London adds ~100 ms to each query, and planning makes many of them. Check where each one is:
+
+- **Supabase**: *Project Settings → General → Region*, or the pooler host in `DATABASE_URL` (`aws-0-eu-west-2` = London).
+- **VM**: Compute Engine → VM instances → *Zone* column (`europe-west2-*` = London; `us-central1-*` = Iowa).
+
+If they differ, create the VM in the database's region (London: `europe-west2`). The API logs how long each optimisation step took (`docker compose logs api | grep "Optimisation job finished"`), so you can compare before and after.
+
 ## Everyday commands
 
 Run these in `~/bedex`:

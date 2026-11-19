@@ -36,6 +36,13 @@
       "when": 1794464942424,
       "tag": "0004_route_planning",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795063921852,
+      "tag": "0005_geocode_approximate",
+      "breakpoints": true
     }
   ]
 }

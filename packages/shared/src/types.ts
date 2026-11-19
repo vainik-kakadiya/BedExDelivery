@@ -214,11 +214,46 @@ export interface DashboardLive {
     orderId: string;
     orderNumber: string;
     customerName: string;
+    postcode: string;
     status: OrderStatus;
+    eta: string | null;
+    completedAt: string | null;
     lat: number;
     lng: number;
   }[];
+  /** One per route that day, sorted by name like the planner, so colours match. */
+  routes: LiveRoute[];
   depots: { id: string; name: string; lat: number; lng: number }[];
+}
+
+/** DSH-03: one van's day on the tracking map. */
+export interface LiveRoute {
+  routeId: string;
+  name: string;
+  status: RouteStatus;
+  driverId: string | null;
+  driverName: string | null;
+  vanName: string | null;
+  vanRegistration: string | null;
+  depotId: string;
+  endType: RouteEndType;
+  /** Planned road path; null when timings are estimated (draw straight lines). */
+  polyline: string | null;
+  stopsTotal: number;
+  stopsCompleted: number;
+  /** The first stop not finished yet: where the van is heading. */
+  nextStop: { stopId: string; sequence: number; postcode: string; customerName: string; eta: string | null } | null;
+  /** ETA at the last stop still to do (or when the last one was finished). */
+  lastStopEta: string | null;
+  /** Back at the depot / driver's home. */
+  plannedEnd: string | null;
+  /** Finished stops in the order they were done. */
+  done: { stopId: string; sequence: number; postcode: string; status: OrderStatus; completedAt: string | null }[];
+  /**
+   * Where the van is: the latest GPS fix from the driver app, or the last
+   * finished stop if that is more recent. Null before the route starts.
+   */
+  position: { lat: number; lng: number; at: string; source: 'gps' | 'stop'; accuracy: number | null } | null;
 }
 
 export interface DriverOption {

@@ -30,10 +30,22 @@ export function createApp(ctx: AppContext, options: { logger?: Logger } = {}) {
   );
   app.use(cors({ origin: ctx.env.CORS_ORIGIN, credentials: true }));
   app.use(
+    // One short line per request: "GET /api/v1/orders?limit=50 200 259ms", plus the
+    // error code and message for 4xx/5xx. No headers, so tokens and cookies never reach the log.
     pinoHttp({
       logger: options.logger,
-      redact: ['req.headers.authorization', 'req.headers.cookie', 'res.headers["set-cookie"]'],
       autoLogging: { ignore: (req) => req.url === '/api/v1/health' },
+      serializers: {
+        req: (req: { method: string; url: string }) => ({ method: req.method, url: req.url }),
+        res: (res: { statusCode: number }) => ({ status: res.statusCode }),
+      },
+      customLogLevel: (_req, res, err) => (err || res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info'),
+      customSuccessMessage: (req, res, responseTime) => {
+        const failure = (res as unknown as { locals?: { errorBody?: { code: string; message: string } } }).locals?.errorBody;
+        const line = `${req.method} ${req.originalUrl ?? req.url} ${res.statusCode} ${Math.round(responseTime)}ms`;
+        return failure ? `${line} – ${failure.code}: ${failure.message}` : line;
+      },
+      customErrorMessage: (req, res, err) => `${req.method} ${req.originalUrl ?? req.url} ${res.statusCode} – ${err.message}`,
     }),
   );
   // Order import sends the whole parsed spreadsheet back for preview and commit (ORD-05).
@@ -47,7 +59,7 @@ export function createApp(ctx: AppContext, options: { logger?: Logger } = {}) {
   v1.use('/orders', ordersRouter(ctx));
   v1.use('/drivers', driversRouter(ctx));
   v1.use('/vans', vansRouter(ctx));
-  v1.use('/routes', routesRouter(ctx));
+  v1.use('/routes', routesRouter(ctx, options.logger));
   v1.use('/depots', depotsRouter(ctx));
   v1.use('/settings', settingsRouter(ctx));
   v1.use('/dashboard', dashboardRouter(ctx));

@@ -201,6 +201,24 @@ export const depotSchema = z.object({
 export type DepotInput = z.infer<typeof depotSchema>;
 export const depotUpdateSchema = depotSchema.partial();
 
+/** ORD-07: a pin dropped by the office when the address lookup failed or was only approximate. */
+export const orderLocationSchema = z.object({
+  lat: z.coerce.number().min(49, 'That point is outside the UK').max(61, 'That point is outside the UK'),
+  lng: z.coerce.number().min(-9, 'That point is outside the UK').max(2.5, 'That point is outside the UK'),
+});
+export type OrderLocationInput = z.infer<typeof orderLocationSchema>;
+
+/** DSH-03: a GPS fix from the driver app while a route is out. Not limited to the UK: a bad fix is still worth seeing. */
+export const driverLocationSchema = z.object({
+  lat: z.number().min(-90).max(90),
+  lng: z.number().min(-180).max(180),
+  /** Metres, as the browser reports it. */
+  accuracy: z.number().min(0).max(100_000).optional(),
+  /** When the phone took the fix (it may have been sent late). */
+  recordedAt: z.string().datetime({ offset: true }).optional(),
+});
+export type DriverLocationInput = z.infer<typeof driverLocationSchema>;
+
 export const settingsPatchSchema = z.record(z.union([z.string(), z.number(), z.boolean()]));
 
 const uuid = z.string().uuid();

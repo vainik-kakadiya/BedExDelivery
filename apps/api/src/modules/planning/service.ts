@@ -26,16 +26,16 @@ import {
   type RouteUpdateInput,
   type RouteWarning,
   type RoutingEngineKind,
+  checkTransition,
   londonToUtc,
   metresToMiles,
 } from '@bedex/shared';
 import { type SQL, and, asc, desc, eq, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 import { AppError, badRequest, conflict, notFound } from '../../lib/errors';
 import type { AuthUser } from '../../lib/jwt';
-import { lockOrder, transitionOrder } from '../orders/service';
 import { getSettings } from '../settings/service';
-import { type LatLng, type PlanningModel, type RoutingEngine, SKIP_REASON_TEXT, type TimeWindow } from './engine';
-import { computeSchedule, routeWarnings } from './schedule';
+import { type LatLng, type PlanningModel, type RoutingEngine, SKIP_REASON_TEXT, type TimeWindow, estimateLegs } from './engine';
+import { computeSchedule, overCapacity, routeWarnings } from './schedule';
 
 export interface PlanningContext {
   db: Db;
@@ -43,6 +43,8 @@ export interface PlanningContext {
 }
 
 type RouteRow = typeof routes.$inferSelect;
+type OrderRow = typeof orders.$inferSelect;
+type EventInsert = typeof orderEvents.$inferInsert;
 type OrderPatchStatus = Extract<OrderStatus, 'awaiting_scheduling' | 'in_warehouse' | 'rescheduled'>;
 
 /** Statuses an order can be planned from (RTE-01). */
@@ -50,7 +52,6 @@ const PLANNABLE: OrderPatchStatus[] = ['awaiting_scheduling', 'in_warehouse', 'r
 /** Stops can change until the driver starts the route. */
 const EDITABLE: RouteStatus[] = ['draft', 'released'];
 const DEFAULT_WORK_START = '08:00';
-const DEFAULT_WORK_END = '17:00';
 
 // ---------- shared query pieces ----------
 
@@ -165,67 +166,174 @@ function assertEditable(route: RouteRow) {
   }
 }
 
-async function event(tx: Tx, orderId: string, actor: AuthUser, type: string, routeId: string | null, payload: Record<string, unknown>) {
-  await tx.insert(orderEvents).values({ orderId, actorId: actor.id, actorRole: actor.role, type, routeId, payload });
+/*
+ * The database (Supabase) is usually a long way from the API in network terms,
+ * so every round trip costs ~100 ms+. The helpers below therefore work on whole
+ * lists with a fixed number of statements, never one statement per order, and
+ * statements that don't depend on each other are sent together (postgres.js
+ * pipelines them on the transaction's connection).
+ */
+
+const eventRow = (actor: AuthUser, orderId: string, type: string, routeId: string | null, payload: Record<string, unknown>): EventInsert => ({
+  orderId,
+  actorId: actor.id,
+  actorRole: actor.role,
+  type,
+  routeId,
+  payload,
+});
+
+/** Same row transitionOrder() writes for a status change. */
+const statusEventRow = (
+  actor: AuthUser,
+  order: OrderRow,
+  to: OrderStatus,
+  routeId: string | null,
+  extra: { note?: string; payload?: Record<string, unknown> } = {},
+): EventInsert => ({
+  ...eventRow(actor, order.id, 'status_changed', routeId, extra.payload ?? {}),
+  fromStatus: order.status,
+  toStatus: to,
+  driverId: actor.driverId,
+  note: extra.note ?? null,
+});
+
+async function insertEvents(tx: Tx, rows: EventInsert[]) {
+  if (rows.length) await tx.insert(orderEvents).values(rows);
 }
 
 async function audit(tx: DbOrTx, actor: AuthUser, action: string, entityId: string, details: Record<string, unknown>) {
   await tx.insert(auditLog).values({ actorId: actor.id, action, entity: 'route', entityId, details });
 }
 
-/** Take an order off its route, restoring the status it had before it was planned. */
-async function revertFromRoute(tx: Tx, orderId: string, actor: AuthUser, routeName: string) {
-  const order = await lockOrder(tx, orderId);
-  if (order.status !== 'scheduled') return;
-  const [prev] = await tx
-    .select({ from: orderEvents.fromStatus })
+/** Lock orders in id order, so two planners locking overlapping sets can't deadlock. */
+async function lockOrders(tx: Tx, ids: string[]): Promise<Map<string, OrderRow>> {
+  if (ids.length === 0) return new Map();
+  const rows = await tx.select().from(orders).where(inArray(orders.id, ids)).orderBy(asc(orders.id)).for('update');
+  return new Map(rows.map((o) => [o.id, o]));
+}
+
+function assertTransition(order: OrderRow, to: OrderStatus, actor: AuthUser) {
+  const check = checkTransition(order.status, to, actor.role);
+  if (!check.ok) throw conflict('INVALID_TRANSITION', `${order.orderNumber}: ${check.reason}`, { from: order.status, to });
+}
+
+/**
+ * Take orders off their route, restoring the status each had before it was
+ * planned (Rescheduled keeps its date, otherwise Awaiting scheduling). The
+ * caller removes the route_stops rows.
+ */
+async function revertFromRoute(tx: Tx, orderIds: string[], actor: AuthUser, routeName: string): Promise<void> {
+  const scheduled = [...(await lockOrders(tx, orderIds)).values()].filter((o) => o.status === 'scheduled');
+  if (scheduled.length === 0) return;
+  const previous = await tx
+    .selectDistinctOn([orderEvents.orderId], { orderId: orderEvents.orderId, from: orderEvents.fromStatus })
     .from(orderEvents)
-    .where(and(eq(orderEvents.orderId, orderId), eq(orderEvents.toStatus, 'scheduled')))
-    .orderBy(desc(orderEvents.createdAt))
-    .limit(1);
-  const target: OrderStatus = prev?.from === 'rescheduled' && order.scheduledDate ? 'rescheduled' : 'awaiting_scheduling';
-  await transitionOrder(tx, order, target, actor, {
-    scheduledDate: target === 'rescheduled' ? order.scheduledDate : null,
-    note: `Removed from ${routeName}`,
-  });
+    .where(and(inArray(orderEvents.orderId, scheduled.map((o) => o.id)), eq(orderEvents.toStatus, 'scheduled')))
+    .orderBy(orderEvents.orderId, desc(orderEvents.createdAt));
+  const cameFrom = new Map(previous.map((p) => [p.orderId, p.from]));
+
+  const toRescheduled: string[] = [];
+  const toAwaiting: string[] = [];
+  const events: EventInsert[] = [];
+  for (const o of scheduled) {
+    const target: OrderStatus = cameFrom.get(o.id) === 'rescheduled' && o.scheduledDate ? 'rescheduled' : 'awaiting_scheduling';
+    assertTransition(o, target, actor);
+    (target === 'rescheduled' ? toRescheduled : toAwaiting).push(o.id);
+    events.push(
+      statusEventRow(actor, o, target, o.currentRouteId, {
+        note: `Removed from ${routeName}`,
+        payload: target === 'rescheduled' ? { scheduledDate: o.scheduledDate } : {},
+      }),
+    );
+  }
+  await Promise.all([
+    toRescheduled.length && tx.update(orders).set({ status: 'rescheduled', currentRouteId: null }).where(inArray(orders.id, toRescheduled)),
+    toAwaiting.length &&
+      tx.update(orders).set({ status: 'awaiting_scheduling', currentRouteId: null, scheduledDate: null }).where(inArray(orders.id, toAwaiting)),
+    insertEvents(tx, events),
+  ]);
 }
 
-/** Put a plannable order onto a route (→ Scheduled), or move a scheduled one between routes. */
-async function assignToRoute(tx: Tx, orderId: string, route: RouteRow, actor: AuthUser): Promise<string | null> {
-  const order = await lockOrder(tx, orderId);
-  if (order.currentRouteId === route.id) return null;
+/**
+ * Put orders onto `route` (→ Scheduled), or move scheduled ones over from another
+ * route on the same day. The caller writes the route_stops rows for `route`.
+ * Returns the ids of the routes orders were moved from.
+ */
+async function attachToRoute(tx: Tx, orderIds: string[], route: RouteRow, actor: AuthUser): Promise<string[]> {
+  const locked = await lockOrders(tx, orderIds);
+  const moving: OrderRow[] = [];
+  const unplanned: OrderRow[] = [];
+  for (const id of orderIds) {
+    const o = locked.get(id);
+    if (!o) throw notFound('Order not found');
+    if (o.currentRouteId === route.id) continue;
+    // RTE-08 hard rule: a stop without a map location gets no ETA and can't be driven to.
+    if (o.lat === null || o.lng === null) {
+      throw conflict('NO_LOCATION', `${o.orderNumber} has no map location yet. Fix its address or drop a pin on the map first.`);
+    }
+    if (o.currentRouteId) moving.push(o);
+    else if (o.status === 'scheduled') unplanned.push(o); // left over from a deleted draft
+    else if (PLANNABLE.includes(o.status as OrderPatchStatus)) {
+      assertTransition(o, 'scheduled', actor);
+      unplanned.push(o);
+    } else {
+      throw conflict('ORDER_NOT_PLANNABLE', `${o.orderNumber} is "${ORDER_STATUS_META[o.status].label}" and can't be put on a route`);
+    }
+  }
 
-  if (order.currentRouteId) {
-    const from = await lockRoute(tx, order.currentRouteId);
-    if (from.date !== route.date) throw conflict('WRONG_DATE', `${order.orderNumber} is on a route for another day`);
+  const fromIds = [...new Set(moving.map((o) => o.currentRouteId!))];
+  const sources = fromIds.length
+    ? await tx.select().from(routes).where(inArray(routes.id, fromIds)).orderBy(asc(routes.id)).for('update')
+    : [];
+  const sourceById = new Map(sources.map((r) => [r.id, r]));
+
+  const events: EventInsert[] = [];
+  for (const o of moving) {
+    const from = sourceById.get(o.currentRouteId!)!;
+    if (from.date !== route.date) throw conflict('WRONG_DATE', `${o.orderNumber} is on a route for another day`);
     assertEditable(from);
-    await tx.delete(routeStops).where(and(eq(routeStops.routeId, from.id), eq(routeStops.orderId, orderId)));
-    await tx.update(orders).set({ currentRouteId: route.id }).where(eq(orders.id, orderId));
-    await event(tx, orderId, actor, 'route_changed', route.id, { from: from.name, to: route.name });
-    if (from.status === 'released') await tx.update(routes).set({ changedAt: new Date() }).where(eq(routes.id, from.id));
-    return from.id;
+    events.push(eventRow(actor, o.id, 'route_changed', route.id, { from: from.name, to: route.name }));
   }
+  for (const o of unplanned) {
+    events.push(
+      o.status === 'scheduled'
+        ? eventRow(actor, o.id, 'route_assigned', route.id, { route: route.name })
+        : statusEventRow(actor, o, 'scheduled', route.id, { payload: { route: route.name } }),
+    );
+  }
+  if (events.length === 0) return [];
 
-  if (order.status === 'scheduled') {
-    // Left over from a deleted draft: just attach it.
-    await tx.update(orders).set({ currentRouteId: route.id, scheduledDate: route.date }).where(eq(orders.id, orderId));
-    await event(tx, orderId, actor, 'route_assigned', route.id, { route: route.name });
-    return null;
-  }
-  if (!PLANNABLE.includes(order.status as OrderPatchStatus)) {
-    throw conflict('ORDER_NOT_PLANNABLE', `${order.orderNumber} is "${ORDER_STATUS_META[order.status].label}" and can't be put on a route`);
-  }
-  await transitionOrder(tx, order, 'scheduled', actor, {
-    routeId: route.id,
-    patch: { currentRouteId: route.id, scheduledDate: route.date },
-    payload: { route: route.name },
-  });
-  return null;
+  const releasedSources = sources.filter((r) => r.status === 'released').map((r) => r.id);
+  await Promise.all([
+    moving.length &&
+      tx.delete(routeStops).where(and(inArray(routeStops.routeId, fromIds), inArray(routeStops.orderId, moving.map((o) => o.id)))),
+    moving.length && tx.update(orders).set({ currentRouteId: route.id }).where(inArray(orders.id, moving.map((o) => o.id))),
+    unplanned.length &&
+      tx
+        .update(orders)
+        .set({ status: 'scheduled', currentRouteId: route.id, scheduledDate: route.date })
+        .where(inArray(orders.id, unplanned.map((o) => o.id))),
+    releasedSources.length && tx.update(routes).set({ changedAt: new Date() }).where(inArray(routes.id, releasedSources)),
+    insertEvents(tx, events),
+  ]);
+  return fromIds;
 }
 
-async function resequence(tx: Tx, routeId: string) {
-  const stops = await tx.select({ id: routeStops.id }).from(routeStops).where(eq(routeStops.routeId, routeId)).orderBy(asc(routeStops.sequence));
-  for (const [i, s] of stops.entries()) await tx.update(routeStops).set({ sequence: i + 1 }).where(eq(routeStops.id, s.id));
+/** Renumber stops 1..n (after some were taken out), in one statement. */
+async function resequence(tx: Tx, routeIds: string[]) {
+  if (routeIds.length === 0) return;
+  const ids = sql.join(
+    routeIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+  await tx.execute(sql`
+    update route_stops as rs set sequence = n.seq
+    from (
+      select id, row_number() over (partition by route_id order by sequence) as seq
+      from route_stops where route_id in (${ids})
+    ) as n
+    where rs.id = n.id and rs.sequence <> n.seq`);
 }
 
 // ---------- timings ----------
@@ -240,23 +348,11 @@ interface Timings {
   stops: { orderId: string; eta: Date | null; windowOk: boolean | null }[];
 }
 
-async function saveTimings(tx: DbOrTx, routeId: string, t: Timings) {
-  await tx
-    .update(routes)
-    .set({
-      plannedStart: t.start,
-      plannedEnd: t.end,
-      totalMiles: Math.round(metresToMiles(t.meters) * 10) / 10,
-      driveMinutes: Math.round(t.seconds / 60),
-      totalMinutes: Math.round((t.end.getTime() - t.start.getTime()) / 60_000),
-      polyline: t.polyline,
-      routingEngine: t.engine,
-    })
-    .where(eq(routes.id, routeId));
-  if (t.stops.length === 0) return;
-  // One statement for all stops: each round trip to the database counts.
+/** Write every stop's ETA in one statement. */
+async function saveStopEtas(tx: DbOrTx, routeId: string, stops: Timings['stops']) {
+  if (stops.length === 0) return;
   const values = sql.join(
-    t.stops.map((s) => sql`(${s.orderId}::uuid, ${s.eta?.toISOString() ?? null}::timestamptz, ${s.windowOk}::boolean)`),
+    stops.map((s) => sql`(${s.orderId}::uuid, ${s.eta?.toISOString() ?? null}::timestamptz, ${s.windowOk}::boolean)`),
     sql`, `,
   );
   await tx.execute(sql`
@@ -265,43 +361,62 @@ async function saveTimings(tx: DbOrTx, routeId: string, t: Timings) {
     where rs.route_id = ${routeId} and rs.order_id = v.order_id`);
 }
 
+async function saveTimings(tx: DbOrTx, routeId: string, t: Timings) {
+  await Promise.all([
+    tx
+      .update(routes)
+      .set({
+        plannedStart: t.start,
+        plannedEnd: t.end,
+        totalMiles: Math.round(metresToMiles(t.meters) * 10) / 10,
+        driveMinutes: Math.round(t.seconds / 60),
+        totalMinutes: Math.round((t.end.getTime() - t.start.getTime()) / 60_000),
+        polyline: t.polyline,
+        routingEngine: t.engine,
+      })
+      .where(eq(routes.id, routeId)),
+    saveStopEtas(tx, routeId, t.stops),
+  ]);
+}
+
 /** RTE-07: recompute ETAs, miles and durations for a route's current stop order. */
 export async function recalculateRoute(ctx: PlanningContext, routeId: string): Promise<void> {
   const { db, routing } = ctx;
-  const [route] = await db
-    .select({
-      id: routes.id,
-      date: routes.date,
-      status: routes.status,
-      endType: routes.endType,
-      startedAt: routes.startedAt,
-      depotLat: depots.lat,
-      depotLng: depots.lng,
-      workStart: drivers.workStart,
-      homeLat: drivers.homeLat,
-      homeLng: drivers.homeLng,
-    })
-    .from(routes)
-    .innerJoin(depots, eq(depots.id, routes.depotId))
-    .leftJoin(drivers, eq(drivers.id, routes.driverId))
-    .where(eq(routes.id, routeId));
+  const [[route], stops] = await Promise.all([
+    db
+      .select({
+        id: routes.id,
+        date: routes.date,
+        status: routes.status,
+        endType: routes.endType,
+        startedAt: routes.startedAt,
+        depotLat: depots.lat,
+        depotLng: depots.lng,
+        workStart: drivers.workStart,
+        homeLat: drivers.homeLat,
+        homeLng: drivers.homeLng,
+      })
+      .from(routes)
+      .innerJoin(depots, eq(depots.id, routes.depotId))
+      .leftJoin(drivers, eq(drivers.id, routes.driverId))
+      .where(eq(routes.id, routeId)),
+    db
+      .select({
+        orderId: orders.id,
+        lat: orders.lat,
+        lng: orders.lng,
+        serviceMinutes: orders.serviceMinutes,
+        extraMinutes: orders.extraMinutes,
+        from: orders.timeWindowStart,
+        to: orders.timeWindowEnd,
+        completedAt: routeStops.completedAt,
+      })
+      .from(routeStops)
+      .innerJoin(orders, eq(orders.id, routeStops.orderId))
+      .where(eq(routeStops.routeId, routeId))
+      .orderBy(asc(routeStops.sequence)),
+  ]);
   if (!route) throw notFound('Route not found');
-
-  const stops = await db
-    .select({
-      orderId: orders.id,
-      lat: orders.lat,
-      lng: orders.lng,
-      serviceMinutes: orders.serviceMinutes,
-      extraMinutes: orders.extraMinutes,
-      from: orders.timeWindowStart,
-      to: orders.timeWindowEnd,
-      completedAt: routeStops.completedAt,
-    })
-    .from(routeStops)
-    .innerJoin(orders, eq(orders.id, routeStops.orderId))
-    .where(eq(routeStops.routeId, routeId))
-    .orderBy(asc(routeStops.sequence));
 
   const depot = { lat: route.depotLat, lng: route.depotLng };
 
@@ -322,15 +437,14 @@ export async function recalculateRoute(ctx: PlanningContext, routeId: string): P
       outstanding.map((s) => ({ orderId: s.orderId, serviceSeconds: (s.serviceMinutes + s.extraMinutes) * 60, window: windowOf(route.date, s.from, s.to) })),
       legs.legs,
     );
-    await db.transaction(async (tx) => {
-      for (const s of schedule.stops) {
-        await tx
-          .update(routeStops)
-          .set({ eta: s.start, etaWindowOk: s.windowOk })
-          .where(and(eq(routeStops.routeId, routeId), eq(routeStops.orderId, s.orderId)));
-      }
-      await tx.update(routes).set({ plannedEnd: schedule.end }).where(eq(routes.id, routeId));
-    });
+    await Promise.all([
+      saveStopEtas(
+        db,
+        routeId,
+        schedule.stops.map((s) => ({ orderId: s.orderId, eta: s.start, windowOk: s.windowOk })),
+      ),
+      db.update(routes).set({ plannedEnd: schedule.end }).where(eq(routes.id, routeId)),
+    ]);
     return;
   }
   const start = londonToUtc(route.date, route.workStart ?? DEFAULT_WORK_START);
@@ -498,10 +612,10 @@ export async function getPlannerState(ctx: PlanningContext, date: string): Promi
   if (noGeo.length) {
     warnings.push({
       code: 'missing_geocode',
-      message: `${noGeo.length} order${noGeo.length === 1 ? ' has' : 's have'} no map location and can't be optimised: ${noGeo
+      message: `${noGeo.length} order${noGeo.length === 1 ? ' has' : 's have'} no map location and can't be planned: ${noGeo
         .slice(0, 5)
         .map((o) => o.orderNumber)
-        .join(', ')}${noGeo.length > 5 ? '…' : ''}`,
+        .join(', ')}${noGeo.length > 5 ? '…' : ''}. Use "Fix location" to correct the address or drop a pin.`,
       orderIds: noGeo.map((o) => o.id),
     });
   }
@@ -671,77 +785,101 @@ export async function optimiseDay(
       await tx.delete(routes).where(inArray(routes.id, draftIds));
     }
 
-    const taken = new Set((await tx.select({ name: routes.name }).from(routes).where(eq(routes.date, date))).map((r) => r.name));
-    const letters = [...ROUTE_LETTERS].map((l) => `Route ${l}`).filter((n) => !taken.has(n));
-    const planned = new Set<string>();
-    const created: string[] = [];
     const vehicleOrder = input.vehicles.map((v) => v.driverId);
-    const sortedRoutes = [...result.routes].sort((a, b) => vehicleOrder.indexOf(a.vehicleKey) - vehicleOrder.indexOf(b.vehicleKey));
+    const sortedRoutes = result.routes
+      .filter((r) => r.visits.length > 0)
+      .sort((a, b) => vehicleOrder.indexOf(a.vehicleKey) - vehicleOrder.indexOf(b.vehicleKey));
+    const [takenRows, locked] = await Promise.all([
+      tx.select({ name: routes.name }).from(routes).where(eq(routes.date, date)),
+      lockOrders(tx, sortedRoutes.flatMap((r) => r.visits.map((v) => v.orderId))),
+    ]);
+    const taken = new Set(takenRows.map((r) => r.name));
+    const letters = [...ROUTE_LETTERS].map((l) => `Route ${l}`).filter((n) => !taken.has(n));
 
-    for (const [i, plannedRoute] of sortedRoutes.entries()) {
-      const vehicle = input.vehicles.find((v) => v.driverId === plannedRoute.vehicleKey)!;
-      const [route] = await tx
-        .insert(routes)
-        .values({
-          date,
-          name: letters[i] ?? `Route ${i + 1}`,
-          depotId: depot.id,
-          endType: input.endType,
-          driverId: vehicle.driverId,
-          vanId: vehicle.vanId,
-          status: 'draft',
-          optimisedAt: new Date(),
-        })
-        .returning();
-      if (!route) throw new Error('Route insert failed');
-      created.push(route.id);
+    const inserted = sortedRoutes.length
+      ? await tx
+          .insert(routes)
+          .values(
+            sortedRoutes.map((plannedRoute, i) => {
+              const vehicle = input.vehicles.find((v) => v.driverId === plannedRoute.vehicleKey)!;
+              return {
+                date,
+                name: letters[i] ?? `Route ${i + 1}`,
+                depotId: depot.id,
+                endType: input.endType,
+                driverId: vehicle.driverId,
+                vanId: vehicle.vanId,
+                status: 'draft' as const,
+                optimisedAt: new Date(),
+              };
+            }),
+          )
+          .returning()
+      : [];
+    // One route per driver, so the driver identifies the inserted row.
+    const routeFor = new Map(inserted.map((r) => [r.driverId!, r]));
 
-      const kept = [];
-      for (const visit of plannedRoute.visits) {
-        const order = await lockOrder(tx, visit.orderId);
-        const ok = order.currentRouteId === null && (order.status === 'scheduled' || PLANNABLE.includes(order.status as OrderPatchStatus));
+    const planned = new Set<string>();
+    const windows = new Map(located.map((o) => [o.id, windowOf(date, o.timeWindowStart, o.timeWindowEnd)]));
+    // Run after the stops exist (calling these starts their queries straight away).
+    const writes: (() => Promise<unknown>)[] = [];
+    const stopRows: (typeof routeStops.$inferInsert)[] = [];
+    for (const plannedRoute of sortedRoutes) {
+      const route = routeFor.get(plannedRoute.vehicleKey)!;
+      const kept = plannedRoute.visits.filter((visit) => {
+        const order = locked.get(visit.orderId);
+        const ok =
+          !!order &&
+          order.currentRouteId === null &&
+          (order.status === 'scheduled' || PLANNABLE.includes(order.status as OrderPatchStatus));
         if (!ok) {
-          skipped.push({ orderId: order.id, orderNumber: order.orderNumber, reason: 'Changed by someone else while optimising' });
-          continue;
+          skipped.push({ orderId: visit.orderId, orderNumber: order?.orderNumber ?? '', reason: 'Changed by someone else while optimising' });
         }
-        await tx.insert(routeStops).values({ routeId: route.id, orderId: order.id, sequence: kept.length + 1 });
-        await assignToRoute(tx, order.id, route, actor);
-        planned.add(order.id);
-        kept.push(visit);
-      }
-
-      const windows = new Map(located.map((o) => [o.id, windowOf(date, o.timeWindowStart, o.timeWindowEnd)]));
-      await saveTimings(tx, route.id, {
-        start: plannedRoute.startTime,
-        end: plannedRoute.endTime,
-        meters: plannedRoute.distanceMeters,
-        seconds: plannedRoute.travelSeconds,
-        polyline: plannedRoute.polyline,
-        engine: result.engine,
-        stops: kept.map((v) => {
-          const w = windows.get(v.orderId);
-          return { orderId: v.orderId, eta: v.start, windowOk: !w || v.start <= w.end };
-        }),
+        return ok;
       });
+      kept.forEach((v, i) => {
+        stopRows.push({ routeId: route.id, orderId: v.orderId, sequence: i + 1 });
+        planned.add(v.orderId);
+      });
+      writes.push(() => attachToRoute(tx, kept.map((v) => v.orderId), route, actor));
+      writes.push(() =>
+        saveTimings(tx, route.id, {
+          start: plannedRoute.startTime,
+          end: plannedRoute.endTime,
+          meters: plannedRoute.distanceMeters,
+          seconds: plannedRoute.travelSeconds,
+          polyline: plannedRoute.polyline,
+          engine: result.engine,
+          stops: kept.map((v) => {
+            const w = windows.get(v.orderId);
+            return { orderId: v.orderId, eta: v.start, windowOk: !w || v.start <= w.end };
+          }),
+        }),
+      );
     }
-
-    for (const orderId of previouslyPlanned) {
-      if (!planned.has(orderId)) await revertFromRoute(tx, orderId, actor, 'draft plan');
-    }
+    // Stops first: the ETA updates in saveTimings need the rows to exist.
+    if (stopRows.length) await tx.insert(routeStops).values(stopRows);
+    await Promise.all(writes.map((write) => write()));
+    await revertFromRoute(
+      tx,
+      previouslyPlanned.filter((id) => !planned.has(id)),
+      actor,
+      'draft plan',
+    );
     await audit(tx, actor, 'routes_optimised', date, {
       date,
       engine: result.engine,
-      routes: created.length,
+      routes: inserted.length,
       planned: planned.size,
       skipped: skipped.length,
     });
-    return created;
+    return inserted.map((r) => r.id);
   });
 
   // The local optimiser plans on estimates; switch to real road times when available.
   if (result.engine === 'estimate' && routing.travelKind === 'google' && routeIds.length) {
     setPhase('Calculating road times');
-    for (const id of routeIds) await recalculateRoute(ctx, id);
+    await Promise.all(routeIds.map((id) => recalculateRoute(ctx, id)));
   }
   return { routeIds, skipped, engine: result.engine };
 }
@@ -760,29 +898,33 @@ export async function setRouteStops(ctx: PlanningContext, routeId: string, order
 
     const removed = current.filter((id) => !orderIds.includes(id));
     const added = orderIds.filter((id) => !current.includes(id));
-    for (const id of removed) await revertFromRoute(tx, id, actor, route.name);
-    for (const id of added) {
-      const from = await assignToRoute(tx, id, route, actor);
-      if (from) affected.add(from);
-    }
+    await revertFromRoute(tx, removed, actor, route.name);
+    for (const from of await attachToRoute(tx, added, route, actor)) affected.add(from);
 
     await tx.delete(routeStops).where(eq(routeStops.routeId, routeId));
     if (orderIds.length) {
       await tx.insert(routeStops).values(orderIds.map((orderId, i) => ({ routeId, orderId, sequence: i + 1 })));
     }
-    for (const other of affected) if (other !== routeId) await resequence(tx, other);
+    await resequence(
+      tx,
+      [...affected].filter((id) => id !== routeId),
+    );
 
     const reordered = current.filter((id) => orderIds.includes(id)).join() !== orderIds.filter((id) => current.includes(id)).join();
     if (route.status === 'released' && (added.length || removed.length || reordered)) {
       // RTE-09: the driver app highlights the change; history records what changed.
-      await tx.update(routes).set({ changedAt: new Date() }).where(eq(routes.id, routeId));
-      for (const id of orderIds.filter((o) => current.includes(o))) {
-        if (reordered) await event(tx, id, actor, 'route_resequenced', routeId, { route: route.name });
-      }
-      await audit(tx, actor, 'released_route_edited', routeId, { added, removed, reordered });
+      await Promise.all([
+        tx.update(routes).set({ changedAt: new Date() }).where(eq(routes.id, routeId)),
+        reordered &&
+          insertEvents(
+            tx,
+            orderIds.filter((o) => current.includes(o)).map((id) => eventRow(actor, id, 'route_resequenced', routeId, { route: route.name })),
+          ),
+        audit(tx, actor, 'released_route_edited', routeId, { added, removed, reordered }),
+      ]);
     }
   });
-  for (const id of affected) await recalculateRoute(ctx, id);
+  await Promise.all([...affected].map((id) => recalculateRoute(ctx, id)));
 }
 
 /**
@@ -822,96 +964,167 @@ export async function transferStops(
       throw conflict('ROUTE_NOT_RELEASED', `${outForDelivery.map((s) => s.number).join(', ')} ${outForDelivery.length > 1 ? 'are' : 'is'} already out for delivery – move to a released or in-progress route`);
     }
 
-    const [{ next } = { next: 0 }] = await tx
-      .select({ next: sql<number>`coalesce(max(${routeStops.sequence}), 0)`.mapWith(Number) })
-      .from(routeStops)
-      .where(eq(routeStops.routeId, toRouteId));
-    await tx.delete(routeStops).where(and(eq(routeStops.routeId, fromRouteId), inArray(routeStops.orderId, orderIds)));
-    await tx.insert(routeStops).values(orderIds.map((orderId, i) => ({ routeId: toRouteId, orderId, sequence: next + i + 1 })));
-    await resequence(tx, fromRouteId);
-    await tx.update(orders).set({ currentRouteId: toRouteId }).where(inArray(orders.id, orderIds));
-
     const driverIds = [from.driverId, to.driverId].filter((x): x is string => !!x);
-    const driverNames = driverIds.length
-      ? await tx.select({ id: drivers.id, name: users.name }).from(drivers).innerJoin(users, eq(users.id, drivers.userId)).where(inArray(drivers.id, driverIds))
-      : [];
+    const [[{ next } = { next: 0 }], driverNames] = await Promise.all([
+      tx
+        .select({ next: sql<number>`coalesce(max(${routeStops.sequence}), 0)`.mapWith(Number) })
+        .from(routeStops)
+        .where(eq(routeStops.routeId, toRouteId)),
+      driverIds.length
+        ? tx.select({ id: drivers.id, name: users.name }).from(drivers).innerJoin(users, eq(users.id, drivers.userId)).where(inArray(drivers.id, driverIds))
+        : [],
+    ]);
+    await tx.delete(routeStops).where(and(eq(routeStops.routeId, fromRouteId), inArray(routeStops.orderId, orderIds)));
     const nameOf = (id: string | null) => driverNames.find((d) => d.id === id)?.name ?? null;
-    for (const orderId of orderIds) {
-      await event(tx, orderId, actor, 'route_changed', toRouteId, {
-        from: from.name,
-        to: to.name,
-        fromDriver: nameOf(from.driverId),
-        toDriver: nameOf(to.driverId),
-      });
-    }
-    const now = new Date();
-    for (const r of [from, to]) if (r.status !== 'draft') await tx.update(routes).set({ changedAt: now }).where(eq(routes.id, r.id));
-    await audit(tx, actor, 'stops_transferred', fromRouteId, { to: toRouteId, orderIds });
+    const changed = [from, to].filter((r) => r.status !== 'draft').map((r) => r.id);
+    await Promise.all([
+      tx.insert(routeStops).values(orderIds.map((orderId, i) => ({ routeId: toRouteId, orderId, sequence: next + i + 1 }))),
+      resequence(tx, [fromRouteId]),
+      tx.update(orders).set({ currentRouteId: toRouteId }).where(inArray(orders.id, orderIds)),
+      insertEvents(
+        tx,
+        orderIds.map((orderId) =>
+          eventRow(actor, orderId, 'route_changed', toRouteId, {
+            from: from.name,
+            to: to.name,
+            fromDriver: nameOf(from.driverId),
+            toDriver: nameOf(to.driverId),
+          }),
+        ),
+      ),
+      changed.length && tx.update(routes).set({ changedAt: new Date() }).where(inArray(routes.id, changed)),
+      audit(tx, actor, 'stops_transferred', fromRouteId, { to: toRouteId, orderIds }),
+    ]);
   });
-  await recalculateRoute(ctx, fromRouteId);
-  await recalculateRoute(ctx, toRouteId);
+  await Promise.all([recalculateRoute(ctx, fromRouteId), recalculateRoute(ctx, toRouteId)]);
 }
 
-/** RTE-07 "re-optimise this route": best order for the same stops and vehicle. */
-export async function reoptimiseRoute(ctx: PlanningContext, routeId: string, actor: AuthUser): Promise<{ skipped: OptimiseSkipped[] }> {
+export interface ReoptimiseOutcome {
+  skipped: OptimiseSkipped[];
+  /** False when the current order was already as good as anything found. */
+  changed: boolean;
+}
+
+/** One Routes API (or estimate) call for a candidate stop order: lateness first, then time, then distance. */
+async function judgeOrder(
+  routing: RoutingEngine,
+  start: Date,
+  depot: LatLng,
+  end: LatLng | null,
+  ordered: (PlannerOrderRow & { lat: number; lng: number })[],
+  date: string,
+) {
+  const legs = await routing.legs([depot, ...ordered.map((o) => ({ lat: o.lat, lng: o.lng })), ...(end ? [end] : [])]);
+  const schedule = computeSchedule(
+    start,
+    ordered.map((o) => ({
+      orderId: o.id,
+      serviceSeconds: (o.serviceMinutes + o.extraMinutes) * 60,
+      window: windowOf(date, o.timeWindowStart, o.timeWindowEnd),
+    })),
+    legs.legs,
+  );
+  return {
+    engine: legs.engine,
+    late: schedule.stops.filter((s) => !s.windowOk).length,
+    cost: schedule.seconds + schedule.meters / 1000,
+  };
+}
+
+/**
+ * RTE-07 "re-optimise this route": best order for the same stops and vehicle.
+ * The proposal is checked on the same travel times the route is shown with
+ * (real roads when the Routes API is set up) and only kept if it is better, so
+ * re-optimising never makes a route longer.
+ */
+export async function reoptimiseRoute(ctx: PlanningContext, routeId: string, actor: AuthUser): Promise<ReoptimiseOutcome> {
   const { db, routing } = ctx;
-  const [row] = await db
-    .select({ route: routes, depot: depots, driver: drivers, capacity: vans.capacityUnits })
-    .from(routes)
-    .innerJoin(depots, eq(depots.id, routes.depotId))
-    .leftJoin(drivers, eq(drivers.id, routes.driverId))
-    .leftJoin(vans, eq(vans.id, routes.vanId))
-    .where(eq(routes.id, routeId));
+  const [[row], stops] = await Promise.all([
+    db
+      .select({ route: routes, depot: depots, driver: drivers })
+      .from(routes)
+      .innerJoin(depots, eq(depots.id, routes.depotId))
+      .leftJoin(drivers, eq(drivers.id, routes.driverId))
+      .where(eq(routes.id, routeId)),
+    db
+      .select(plannerOrderColumns)
+      .from(routeStops)
+      .innerJoin(orders, eq(orders.id, routeStops.orderId))
+      .where(eq(routeStops.routeId, routeId))
+      .orderBy(asc(routeStops.sequence)) as Promise<PlannerOrderRow[]>,
+  ]);
   if (!row) throw notFound('Route not found');
   assertEditable(row.route);
   const { route, depot, driver } = row;
 
-  const stops = (await db
-    .select(plannerOrderColumns)
-    .from(routeStops)
-    .innerJoin(orders, eq(orders.id, routeStops.orderId))
-    .where(eq(routeStops.routeId, routeId))
-    .orderBy(asc(routeStops.sequence))) as PlannerOrderRow[];
-  if (stops.length < 2) return { skipped: [] };
+  const located = stops.filter(hasGeo);
+  if (located.length < 2) return { skipped: [], changed: false };
 
   const depotPoint = { lat: depot.lat, lng: depot.lng };
-  const located = stops.filter(hasGeo);
-  const result = await routing.optimise({
-    shipments: located.map((o) => ({
-      orderId: o.id,
-      location: { lat: o.lat!, lng: o.lng! },
-      serviceSeconds: (o.serviceMinutes + o.extraMinutes) * 60,
-      demand: o.loadUnits,
-      window: windowOf(route.date, o.timeWindowStart, o.timeWindowEnd),
-    })),
-    vehicles: [
-      {
-        key: 'route',
-        start: depotPoint,
-        end: endPoint(route.endType, depotPoint, driver ? { lat: driver.homeLat, lng: driver.homeLng } : null),
-        // Re-ordering can't change the load, so don't let capacity skip stops here.
-        capacity: null,
-        startTime: londonToUtc(route.date, driver?.workStart ?? DEFAULT_WORK_START),
-        endTime: londonToUtc(route.date, driver?.workEnd ?? DEFAULT_WORK_END),
-        maxDurationSeconds: null,
-      },
-    ],
-  });
+  const end = endPoint(route.endType, depotPoint, driver ? { lat: driver.homeLat, lng: driver.homeLng } : null);
+  const startTime = londonToUtc(route.date, driver?.workStart ?? DEFAULT_WORK_START);
+  const current = located.map((o) => o.id);
+  const result = await routing.optimise(
+    {
+      shipments: located.map((o) => ({
+        orderId: o.id,
+        location: { lat: o.lat, lng: o.lng },
+        serviceSeconds: (o.serviceMinutes + o.extraMinutes) * 60,
+        demand: o.loadUnits,
+        window: windowOf(route.date, o.timeWindowStart, o.timeWindowEnd),
+      })),
+      vehicles: [
+        {
+          key: 'route',
+          start: depotPoint,
+          end,
+          // Re-ordering the same stops can't change the load or make the day fit, so neither
+          // may drop stops here. Overtime still shows as a route warning, from real times.
+          capacity: null,
+          startTime,
+          endTime: new Date(startTime.getTime() + 24 * 3_600_000),
+          maxDurationSeconds: null,
+        },
+      ],
+    },
+    { initial: [current] },
+  );
 
   // Never drop stops: anything the optimiser couldn't fit keeps its place at the end.
-  const order = result.routes[0]?.visits.map((v) => v.orderId) ?? [];
-  const rest = stops.map((s) => s.id).filter((id) => !order.includes(id));
-  await setRouteStops(ctx, routeId, [...order, ...rest], actor);
-  await db.update(routes).set({ optimisedAt: new Date() }).where(eq(routes.id, routeId));
+  const proposed = result.routes[0]?.visits.map((v) => v.orderId) ?? [];
+  const candidate = [...proposed, ...current.filter((id) => !proposed.includes(id))];
+  const byId = new Map(stops.map((s) => [s.id, s]));
+  const skipped = result.skipped.map((s) => ({
+    orderId: s.orderId,
+    orderNumber: byId.get(s.orderId)?.orderNumber ?? '',
+    reason: `${SKIP_REASON_TEXT[s.reason]} – kept at the end of the route`,
+  }));
 
-  const byId = new Map(stops.map((s) => [s.id, s.orderNumber]));
-  return {
-    skipped: result.skipped.map((s) => ({
-      orderId: s.orderId,
-      orderNumber: byId.get(s.orderId) ?? '',
-      reason: `${SKIP_REASON_TEXT[s.reason]} – kept at the end of the route`,
-    })),
-  };
+  let better = candidate.join() !== current.join();
+  if (better) {
+    const asRows = (ids: string[]) => ids.map((id) => byId.get(id) as PlannerOrderRow & { lat: number; lng: number });
+    let [now, next] = await Promise.all([
+      judgeOrder(routing, startTime, depotPoint, end, asRows(current), route.date),
+      judgeOrder(routing, startTime, depotPoint, end, asRows(candidate), route.date),
+    ]);
+    if (now.engine !== next.engine) {
+      // One Routes API call failed: compare like with like.
+      const estimateOnly = { ...routing, legs: async (points: LatLng[]) => estimateLegs(points) };
+      [now, next] = await Promise.all([
+        judgeOrder(estimateOnly, startTime, depotPoint, end, asRows(current), route.date),
+        judgeOrder(estimateOnly, startTime, depotPoint, end, asRows(candidate), route.date),
+      ]);
+    }
+    // Ignore "improvements" under a minute: not worth reshuffling the driver's list.
+    better = next.late < now.late || (next.late === now.late && next.cost < now.cost - 60);
+  }
+
+  if (better) {
+    const unlocated = stops.filter((s) => !hasGeo(s)).map((s) => s.id);
+    await setRouteStops(ctx, routeId, [...candidate, ...unlocated], actor);
+  }
+  await db.update(routes).set({ optimisedAt: new Date() }).where(eq(routes.id, routeId));
+  return { skipped: better ? skipped : [], changed: better };
 }
 
 export async function updateRoute(ctx: PlanningContext, routeId: string, input: RouteUpdateInput, actor: AuthUser): Promise<void> {
@@ -957,14 +1170,19 @@ export async function updateRoute(ctx: PlanningContext, routeId: string, input: 
     if (reassigned) {
       // DRV-05: reassignment is recorded on every affected order.
       const stopOrders = await tx.select({ orderId: routeStops.orderId }).from(routeStops).where(eq(routeStops.routeId, routeId));
-      for (const { orderId } of stopOrders) {
-        await event(tx, orderId, actor, 'route_reassigned', routeId, {
-          route: route.name,
-          ...(driverChanged && { driver: driverName }),
-          ...(vanChanged && { vanId: input.vanId }),
-        });
-      }
-      await audit(tx, actor, 'route_reassigned', routeId, { driverId: input.driverId, vanId: input.vanId });
+      await Promise.all([
+        insertEvents(
+          tx,
+          stopOrders.map(({ orderId }) =>
+            eventRow(actor, orderId, 'route_reassigned', routeId, {
+              route: route.name,
+              ...(driverChanged && { driver: driverName }),
+              ...(vanChanged && { vanId: input.vanId }),
+            }),
+          ),
+        ),
+        audit(tx, actor, 'route_reassigned', routeId, { driverId: input.driverId, vanId: input.vanId }),
+      ]);
     }
   });
   if (needsRecalc) await recalculateRoute(ctx, routeId);
@@ -977,19 +1195,37 @@ export async function releaseRoute(ctx: PlanningContext, routeId: string, actor:
     const route = await lockRoute(tx, routeId);
     if (route.status !== 'draft') throw conflict('INVALID_ROUTE_STATE', `${route.name} is already ${route.status.replace('_', ' ')}`);
     if (!route.driverId || !route.vanId) throw conflict('ROUTE_INCOMPLETE', 'Assign a driver and a van before releasing');
-    const stops = await tx
-      .select({ orderId: routeStops.orderId, lat: orders.lat, number: orders.orderNumber })
-      .from(routeStops)
-      .innerJoin(orders, eq(orders.id, routeStops.orderId))
-      .where(eq(routeStops.routeId, routeId));
+    const [stops, [van]] = await Promise.all([
+      tx
+        .select({ orderId: routeStops.orderId, lat: orders.lat, number: orders.orderNumber, loadUnits, loadKg, loadM3 })
+        .from(routeStops)
+        .innerJoin(orders, eq(orders.id, routeStops.orderId))
+        .where(eq(routeStops.routeId, routeId)),
+      tx.select().from(vans).where(eq(vans.id, route.vanId)),
+    ]);
     if (stops.length === 0) throw conflict('ROUTE_INCOMPLETE', 'Add at least one stop before releasing');
     const noGeo = stops.filter((s) => s.lat === null);
     if (noGeo.length) {
       throw conflict('ROUTE_INCOMPLETE', `These stops have no map location: ${noGeo.map((s) => s.number).join(', ')}`);
     }
-    await tx.update(routes).set({ status: 'released', releasedAt: new Date(), changedAt: null }).where(eq(routes.id, routeId));
-    for (const s of stops) await event(tx, s.orderId, actor, 'route_released', routeId, { route: route.name });
-    await audit(tx, actor, 'route_released', routeId, { stops: stops.length });
+    // RTE-08 hard rule: an overloaded van can't physically take the route. Drafts may be
+    // over while the planner moves stops around; release is where it has to fit.
+    const overload = overCapacity(van, {
+      units: stops.reduce((n, s) => n + s.loadUnits, 0),
+      kg: stops.reduce((n, s) => n + s.loadKg, 0),
+      m3: stops.reduce((n, s) => n + s.loadM3, 0),
+    });
+    if (overload.length) {
+      throw conflict('OVER_CAPACITY', `${route.name} is over ${van?.name ?? 'the van'}'s capacity (${overload.join(', ')}). Move some stops to another route first.`);
+    }
+    await Promise.all([
+      tx.update(routes).set({ status: 'released', releasedAt: new Date(), changedAt: null }).where(eq(routes.id, routeId)),
+      insertEvents(
+        tx,
+        stops.map((s) => eventRow(actor, s.orderId, 'route_released', routeId, { route: route.name })),
+      ),
+      audit(tx, actor, 'route_released', routeId, { stops: stops.length }),
+    ]);
   });
 }
 
@@ -997,10 +1233,15 @@ export async function unreleaseRoute(ctx: PlanningContext, routeId: string, acto
   await ctx.db.transaction(async (tx) => {
     const route = await lockRoute(tx, routeId);
     if (route.status !== 'released') throw conflict('INVALID_ROUTE_STATE', `Only released routes can be moved back to draft`);
-    await tx.update(routes).set({ status: 'draft', releasedAt: null, changedAt: new Date() }).where(eq(routes.id, routeId));
-    const stopOrders = await tx.select({ orderId: routeStops.orderId }).from(routeStops).where(eq(routeStops.routeId, routeId));
-    for (const { orderId } of stopOrders) await event(tx, orderId, actor, 'route_unreleased', routeId, { route: route.name });
-    await audit(tx, actor, 'route_unreleased', routeId, {});
+    const [stopOrders] = await Promise.all([
+      tx.select({ orderId: routeStops.orderId }).from(routeStops).where(eq(routeStops.routeId, routeId)),
+      tx.update(routes).set({ status: 'draft', releasedAt: null, changedAt: new Date() }).where(eq(routes.id, routeId)),
+      audit(tx, actor, 'route_unreleased', routeId, {}),
+    ]);
+    await insertEvents(
+      tx,
+      stopOrders.map(({ orderId }) => eventRow(actor, orderId, 'route_unreleased', routeId, { route: route.name })),
+    );
   });
 }
 
@@ -1009,7 +1250,12 @@ export async function deleteRoute(ctx: PlanningContext, routeId: string, actor: 
     const route = await lockRoute(tx, routeId);
     assertEditable(route);
     const stopOrders = await tx.select({ orderId: routeStops.orderId }).from(routeStops).where(eq(routeStops.routeId, routeId));
-    for (const { orderId } of stopOrders) await revertFromRoute(tx, orderId, actor, route.name);
+    await revertFromRoute(
+      tx,
+      stopOrders.map((s) => s.orderId),
+      actor,
+      route.name,
+    );
     await tx.delete(routes).where(eq(routes.id, routeId));
     await audit(tx, actor, 'route_deleted', routeId, { name: route.name, date: route.date, status: route.status });
   });

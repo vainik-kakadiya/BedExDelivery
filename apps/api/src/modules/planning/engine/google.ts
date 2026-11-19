@@ -52,6 +52,47 @@ export function createTokenSource(account: ServiceAccount, fetchImpl: typeof fet
   };
 }
 
+/*
+ * On a Google Cloud VM the API can use the VM's own service account through the
+ * metadata server, so no key file is needed. Many organisations block key
+ * creation (iam.disableServiceAccountKeyCreation), and keyless is safer anyway.
+ * The VM needs the "cloud-platform" access scope, and its service account needs
+ * the Route Optimization Editor role (see deploy/google-cloud.md).
+ */
+const METADATA_ACCOUNT = 'http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default';
+const METADATA_HEADERS = { 'Metadata-Flavor': 'Google' };
+const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+
+export interface MetadataAccount {
+  email: string;
+  /** False when the VM's access scopes don't allow Cloud APIs: tokens would be refused. */
+  cloudPlatformScope: boolean;
+}
+
+/** The VM's service account, or null when not running on Google Cloud. */
+export async function detectMetadataAccount(fetchImpl: typeof fetch = fetch): Promise<MetadataAccount | null> {
+  try {
+    const get = (path: string) => fetchImpl(`${METADATA_ACCOUNT}/${path}`, { headers: METADATA_HEADERS, signal: AbortSignal.timeout(2_000) });
+    const [email, scopes] = await Promise.all([get('email'), get('scopes')]);
+    if (!email.ok || !scopes.ok || email.headers.get('Metadata-Flavor') !== 'Google') return null;
+    return { email: (await email.text()).trim(), cloudPlatformScope: (await scopes.text()).split(/\s+/).includes(CLOUD_PLATFORM_SCOPE) };
+  } catch {
+    return null;
+  }
+}
+
+export function metadataTokenSource(fetchImpl: typeof fetch = fetch) {
+  let cached: { token: string; expiresAt: number } | null = null;
+  return async function accessToken(): Promise<string> {
+    if (cached && cached.expiresAt - 60_000 > Date.now()) return cached.token;
+    const res = await fetchImpl(`${METADATA_ACCOUNT}/token`, { headers: METADATA_HEADERS, signal: AbortSignal.timeout(5_000) });
+    if (!res.ok) throw new Error(`Google OAuth failed (metadata server ${res.status}): ${await res.text()}`);
+    const body = (await res.json()) as { access_token: string; expires_in: number };
+    cached = { token: body.access_token, expiresAt: Date.now() + body.expires_in * 1000 };
+    return cached.token;
+  };
+}
+
 // ---------- Route Optimization: request ----------
 
 const latLng = (p: LatLng) => ({ latitude: p.lat, longitude: p.lng });

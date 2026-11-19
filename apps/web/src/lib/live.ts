@@ -94,7 +94,9 @@ export function useLiveUpdates(): void {
   useEventStream(
     '/dashboard/stream',
     (tables) => {
-      void queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      // GPS fixes arrive every ~30 s per van: they only move vans on the map.
+      const onlyGps = tables.length > 0 && tables.every((t) => t === 'driver_locations');
+      void queryClient.invalidateQueries({ queryKey: onlyGps ? ['dashboard', 'live'] : ['dashboard'] });
       if (touches(tables, 'orders', 'delivery_attempts', 'route_stops')) void queryClient.invalidateQueries({ queryKey: ['orders'] });
       if (touches(tables, 'orders', 'routes', 'route_stops')) void queryClient.invalidateQueries({ queryKey: ['planner'] });
       if (touches(tables, 'orders', 'routes', 'route_stops', 'driver_locations', 'delivery_attempts')) {
