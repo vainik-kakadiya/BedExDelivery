@@ -27,26 +27,49 @@ interface GoogleResponse {
     geometry: { location: { lat: number; lng: number }; location_type: string };
     types: string[];
     partial_match?: boolean;
+    address_components?: { long_name: string; short_name: string; types: string[] }[];
   }[];
 }
+
+type GoogleResult = NonNullable<GoogleResponse['results']>[number];
 
 type Attempt = { kind: 'ok'; lat: number; lng: number; precise: boolean } | { kind: 'not_found' } | { kind: 'error'; message: string; retryable: boolean };
 
 /** "ME15 6JY" → "ME15": the postcode district, a few km across. */
 export const outwardCode = (postcode: string) => postcode.trim().toUpperCase().split(/\s+/)[0] ?? '';
 
+const STREET_LEVEL = ['street_address', 'premise', 'subpremise', 'route'];
+const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
 /**
- * Looks the address up in up to three steps, stopping at the first match:
+ * A full-address match found without the postcode filter is only trusted when it
+ * agrees with the order: a street-level result in the same postcode district, or,
+ * when Google gives no postcode, in the same town. This stops a "Bakewell Drive"
+ * at the other end of the country being taken for ours.
+ */
+export function matchesOrder(r: GoogleResult, a: GeocodeAddress): boolean {
+  if (!r.types.some((t) => STREET_LEVEL.includes(t))) return false;
+  const parts = r.address_components ?? [];
+  const postcode = parts.find((c) => c.types.includes('postal_code'))?.long_name;
+  if (postcode) return outwardCode(postcode) === outwardCode(a.postcode);
+  const towns = parts.filter((c) => c.types.some((t) => t === 'postal_town' || t === 'locality')).map((c) => c.long_name);
+  return towns.some((t) => same(t, a.town) || (a.addressLine2 !== null && same(t, a.addressLine2)));
+}
+
+/**
+ * Looks the address up in up to four steps, stopping at the first match:
  * 1. the full address, restricted to its postcode (so a typo in the street
  *    can't put the pin in another town);
  * 2. the postcode on its own (Google often can't tie a valid street to a
- *    postcode, e.g. new builds or flats with a building name);
- * 3. the postcode district ("ME15"), for postcodes Google doesn't know.
- * Steps 2 and 3 are marked not precise, so the office sees "approximate" and
- * can drop an exact pin.
+ *    postcode, e.g. flats with a building name);
+ * 3. the full address without the postcode filter, for postcodes Google
+ *    doesn't know yet (new builds), accepted only if it agrees with the order;
+ * 4. the postcode district ("HP22").
+ * Postcode and district matches are marked not precise, so the office sees
+ * "approximate" and can drop an exact pin.
  */
 export function googleGeocoder(apiKey: string, fetchImpl: typeof fetch = fetch): Geocoder {
-  async function lookup(address: string, components: string, accept?: (r: NonNullable<GoogleResponse['results']>[number]) => boolean): Promise<Attempt> {
+  async function lookup(address: string, components: string, accept?: (r: GoogleResult) => boolean): Promise<Attempt> {
     const params = new URLSearchParams({ address, components, region: 'gb', key: apiKey });
     let body: GoogleResponse;
     try {
@@ -71,20 +94,21 @@ export function googleGeocoder(apiKey: string, fetchImpl: typeof fetch = fetch):
   }
 
   return async (a) => {
-    const full = await lookup(
-      [a.addressLine1, a.addressLine2, a.town, a.postcode].filter(Boolean).join(', '),
-      `country:GB|postal_code:${a.postcode}`,
-    );
+    const fullAddress = [a.addressLine1, a.addressLine2, a.town, a.postcode].filter(Boolean).join(', ');
+    const full = await lookup(fullAddress, `country:GB|postal_code:${a.postcode}`);
     if (full.kind !== 'not_found') return full;
 
     const postcode = await lookup(a.postcode, `country:GB|postal_code:${a.postcode}`);
     if (postcode.kind === 'ok') return { ...postcode, precise: false };
     if (postcode.kind === 'error') return postcode;
 
+    const street = await lookup(fullAddress, 'country:GB', (r) => matchesOrder(r, a));
+    if (street.kind !== 'not_found') return street;
+
     const district = outwardCode(a.postcode);
     if (!district) return { kind: 'not_found' };
-    // Only accept a postcode-area match: "ME15, UK" must not resolve to some street or business.
-    const area = await lookup(`${district}, ${a.town}`, 'country:GB', (r) => r.types.some((t) => t === 'postal_code' || t === 'postal_code_prefix'));
+    // Only accept a postcode-area match: "HP22" must not resolve to some street or business.
+    const area = await lookup(district, `country:GB|postal_code:${district}`, (r) => r.types.some((t) => t === 'postal_code' || t === 'postal_code_prefix'));
     if (area.kind === 'ok') return { ...area, precise: false };
     return area;
   };

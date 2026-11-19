@@ -67,6 +67,7 @@ describe('googleGeocoder', () => {
     const replies = [
       { status: 'ZERO_RESULTS' },
       { status: 'ZERO_RESULTS' },
+      { status: 'ZERO_RESULTS' },
       {
         status: 'OK',
         results: [
@@ -80,6 +81,52 @@ describe('googleGeocoder', () => {
       return new Response(JSON.stringify(replies.shift()));
     }) as unknown as typeof fetch;
     expect(await googleGeocoder('key', sequence)(address)).toEqual({ kind: 'ok', lat: 51.2, lng: 0.5, precise: false });
-    expect(new URL(seen[2]!).searchParams.get('address')).toBe('ME15, Maidstone');
+    expect(new URL(seen[3]!).searchParams.get('address')).toBe('ME15');
+    expect(new URL(seen[3]!).searchParams.get('components')).toBe('country:GB|postal_code:ME15');
+  });
+
+  // Real case: Google doesn't know the new-build postcode HP22 3DA, but does know the street.
+  describe('postcodes Google does not know', () => {
+    const newBuild = { addressLine1: '15 Bakewell Drive', addressLine2: 'Weston Turville', town: 'Aylesbury', postcode: 'HP22 3DA' };
+    const streetResult = (components: { long_name: string; types: string[] }[]) => ({
+      status: 'OK',
+      results: [
+        {
+          geometry: { location: { lat: 51.7998, lng: -0.7778 }, location_type: 'RANGE_INTERPOLATED' },
+          types: ['street_address'],
+          address_components: components.map((c) => ({ ...c, short_name: c.long_name })),
+        },
+      ],
+    });
+    const run = async (third: unknown) => {
+      const seen: string[] = [];
+      const replies = [{ status: 'ZERO_RESULTS' }, { status: 'ZERO_RESULTS' }, third, { status: 'ZERO_RESULTS' }];
+      const sequence = (async (url: string) => {
+        seen.push(url);
+        return new Response(JSON.stringify(replies.shift()));
+      }) as unknown as typeof fetch;
+      return { result: await googleGeocoder('key', sequence)(newBuild), seen };
+    };
+
+    it('finds the street without the postcode filter when the town matches', async () => {
+      const { result, seen } = await run(
+        streetResult([
+          { long_name: 'Weston Turville', types: ['locality'] },
+          { long_name: 'Aylesbury', types: ['postal_town'] },
+        ]),
+      );
+      expect(result).toEqual({ kind: 'ok', lat: 51.7998, lng: -0.7778, precise: true });
+      expect(new URL(seen[2]!).searchParams.get('components')).toBe('country:GB');
+    });
+
+    it('accepts a match in the same postcode district', async () => {
+      const { result } = await run(streetResult([{ long_name: 'HP22 3DB', types: ['postal_code'] }]));
+      expect(result).toMatchObject({ kind: 'ok', precise: true });
+    });
+
+    it('rejects a same-named street in another town or district', async () => {
+      expect((await run(streetResult([{ long_name: 'Derby', types: ['postal_town'] }]))).result).toEqual({ kind: 'not_found' });
+      expect((await run(streetResult([{ long_name: 'DE1 2AB', types: ['postal_code'] }]))).result).toEqual({ kind: 'not_found' });
+    });
   });
 });

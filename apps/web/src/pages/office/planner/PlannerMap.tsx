@@ -14,10 +14,12 @@ interface Props {
   unassigned: PlannerOrder[];
   depot: Depot | undefined;
   highlightRouteId: string | null;
+  /** An unassigned order hovered in the list: drawn large and labelled, and brought into view. */
+  highlightOrderId?: string | null;
 }
 
 /** RTE-01/RTE-06: unassigned orders, and per route a coloured line with numbered pins. */
-export function PlannerMap({ routes, unassigned, depot, highlightRouteId }: Props) {
+export function PlannerMap({ routes, unassigned, depot, highlightRouteId, highlightOrderId = null }: Props) {
   if (!MAPS_KEY) return null;
   return (
     <APIProvider apiKey={MAPS_KEY} region="GB" language="en-GB">
@@ -37,15 +39,33 @@ export function PlannerMap({ routes, unassigned, depot, highlightRouteId }: Prop
             </span>
           </AdvancedMarker>
         )}
-        {unassigned.flatMap((o) =>
-          o.lat !== null && o.lng !== null
-            ? [
-                <AdvancedMarker key={o.id} position={{ lat: o.lat, lng: o.lng }} title={`Unassigned · ${o.orderNumber} · ${o.customerName}`}>
-                  <span className="block h-3.5 w-3.5 rounded-full border-2 border-white bg-slate-400 shadow" />
-                </AdvancedMarker>,
-              ]
-            : [],
-        )}
+        {unassigned.flatMap((o) => {
+          if (o.lat === null || o.lng === null) return [];
+          const active = o.id === highlightOrderId;
+          return [
+            <AdvancedMarker
+              key={o.id}
+              position={{ lat: o.lat, lng: o.lng }}
+              title={`Unassigned · ${o.orderNumber} · ${o.customerName}`}
+              zIndex={active ? 100 : undefined}
+            >
+              {active ? (
+                <span className="flex flex-col items-center">
+                  <span className="whitespace-nowrap rounded-md bg-brand-dark px-2 py-1 text-xs font-semibold text-white shadow-lg">
+                    {o.orderNumber} · {o.postcode}
+                  </span>
+                  <span className="relative mt-1 flex h-5 w-5 items-center justify-center">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand-primary opacity-60" />
+                    <span className="relative block h-5 w-5 rounded-full border-[3px] border-white bg-brand-primary shadow-lg" />
+                  </span>
+                </span>
+              ) : (
+                <span className="block h-3.5 w-3.5 rounded-full border-2 border-white bg-slate-400 shadow" />
+              )}
+            </AdvancedMarker>,
+          ];
+        })}
+        <BringIntoView target={unassigned.find((o) => o.id === highlightOrderId) ?? null} />
         {routes.map((route, i) => {
           const colour = routeColour(i);
           const dimmed = highlightRouteId !== null && highlightRouteId !== route.id;
@@ -110,6 +130,19 @@ function Polyline({ path, colour, opacity, dashed }: { path: LatLng[]; colour: s
     });
     return () => line.setMap(null);
   }, [map, maps, path, colour, opacity, dashed]);
+  return null;
+}
+
+/** Pan to a highlighted order only when it is off screen, so hovering down the list doesn't make the map jump. */
+function BringIntoView({ target }: { target: PlannerOrder | null }) {
+  const map = useMap();
+  const lat = target?.lat ?? null;
+  const lng = target?.lng ?? null;
+  useEffect(() => {
+    if (!map || lat === null || lng === null) return;
+    const bounds = map.getBounds();
+    if (bounds && !bounds.contains({ lat, lng })) map.panTo({ lat, lng });
+  }, [map, lat, lng]);
   return null;
 }
 

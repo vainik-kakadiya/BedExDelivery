@@ -19,10 +19,12 @@ interface Props {
   geocoding: boolean;
   /** Correct the address or drop a pin (ORD-07). */
   onFixLocation: (order: PlannerOrder) => void;
+  /** Pointer or keyboard focus on a row (null when it leaves): highlights the pin on the map. */
+  onHoverOrder?: (orderId: string | null) => void;
 }
 
 /** RTE-01: eligible orders not yet on a route. Ticked ones go into the next optimisation. */
-export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAll, onDropFromRoute, onAddToRoute, disabled, geocoding, onFixLocation }: Props) {
+export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAll, onDropFromRoute, onAddToRoute, disabled, geocoding, onFixLocation, onHoverOrder }: Props) {
   const [over, setOver] = useState(false);
   const editable = routes.filter((r) => r.editable);
   const plannable = orders.filter((o) => o.lat !== null && o.lng !== null);
@@ -66,7 +68,7 @@ export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAl
           {over ? 'Drop to take it off the route' : 'Every eligible order is on a route.'}
         </p>
       ) : (
-        <ul className="max-h-[55vh] divide-y divide-border overflow-y-auto">
+        <ul className="max-h-[55vh] divide-y divide-border overflow-y-auto" onMouseLeave={() => onHoverOrder?.(null)}>
           {orders.map((o) => {
             const located = o.lat !== null && o.lng !== null;
             return (
@@ -75,7 +77,10 @@ export function UnassignedPanel({ orders, routes, excluded, onToggle, onToggleAl
                 // A stop needs a map location (RTE-08): fix it first.
                 draggable={!disabled && located}
                 onDragStart={(e) => startDrag(e, { orderId: o.id, fromRouteId: null })}
-                className="flex items-center gap-2 px-3 py-2"
+                onMouseEnter={() => onHoverOrder?.(located ? o.id : null)}
+                onFocus={() => onHoverOrder?.(located ? o.id : null)}
+                onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && onHoverOrder?.(null)}
+                className={cn('flex items-center gap-2 px-3 py-2', located && 'hover:bg-surface')}
               >
                 <input
                   type="checkbox"

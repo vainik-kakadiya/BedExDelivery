@@ -19,18 +19,25 @@ import type {
 } from './types';
 
 const EARTH_RADIUS_M = 6_371_000;
-/** Roads are longer than straight lines; ~1.35 is typical for UK urban driving. */
-const ROAD_FACTOR = 1.35;
 /**
- * Van speed by distance band, including junctions. One flat urban speed made a
- * 60-mile leg take 4+ hours, so long routes "didn't fit" a working day that they
- * fit easily on real roads. The first few km of any leg are town streets; longer
- * legs use A-roads and then motorways / dual carriageways.
+ * Roads are longer than straight lines: ~1.35× in and around towns, but long
+ * trips mostly follow motorways and A-roads, ~1.25× for the part beyond 30 km.
+ */
+const ROAD_FACTOR = 1.35;
+const LONG_ROAD_FACTOR = 1.25;
+const LONG_FROM_METERS = 30_000;
+/**
+ * Van speed by distance band, including junctions. The first few km of any leg
+ * are town streets; longer legs use A-roads and then motorways.
+ * Checked against 48 real Google road legs between BedEx orders (Nov 2026):
+ * legs over 100 km came out 7% slow (32% with the previous 75 km/h ceiling, which
+ * made long routes look full and left orders unplanned); town legs ~11% fast.
  */
 const SPEED_BANDS: { untilMeters: number; mps: number }[] = [
   { untilMeters: 5_000, mps: 20 / 3.6 },
   { untilMeters: 25_000, mps: 40 / 3.6 },
-  { untilMeters: Infinity, mps: 75 / 3.6 },
+  { untilMeters: 60_000, mps: 70 / 3.6 },
+  { untilMeters: Infinity, mps: 100 / 3.6 },
 ];
 /** Parking / manoeuvring at each stop. */
 const PARKING_SECONDS = 120;
@@ -56,7 +63,8 @@ export function haversineMeters(a: LatLng, b: LatLng): number {
 }
 
 export function estimateLeg(a: LatLng, b: LatLng): Leg {
-  const meters = haversineMeters(a, b) * ROAD_FACTOR;
+  const straight = haversineMeters(a, b);
+  const meters = Math.min(straight, LONG_FROM_METERS) * ROAD_FACTOR + Math.max(0, straight - LONG_FROM_METERS) * LONG_ROAD_FACTOR;
   if (meters < 50) return { meters, seconds: 0 };
   return { meters, seconds: Math.round(driveSeconds(meters) + PARKING_SECONDS) };
 }

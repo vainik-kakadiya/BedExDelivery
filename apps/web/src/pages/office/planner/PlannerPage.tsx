@@ -74,6 +74,8 @@ export function PlannerPage() {
   const [notice, setNotice] = useState<{ title: string; items: string[] } | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   const [fixing, setFixing] = useState<PlannerOrder | null>(null);
+  /** Unassigned order under the pointer: its pin stands out on the map. */
+  const [hoveredOrder, setHoveredOrder] = useState<string | null>(null);
 
   async function run(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
@@ -455,6 +457,7 @@ export function PlannerPage() {
               onDropFromRoute={takeOff}
               onAddToRoute={addTo}
               onFixLocation={setFixing}
+              onHoverOrder={setHoveredOrder}
             />
             {MAPS_KEY && routesList}
           </div>
@@ -462,7 +465,13 @@ export function PlannerPage() {
           {MAPS_KEY ? (
             // Phones/tablets: a fixed-height map above the lists. Desktop: the right-hand column.
             <div className="card h-[50vh] min-h-[300px] overflow-hidden max-lg:order-first lg:h-auto lg:min-h-[360px]">
-              <PlannerMap routes={state.routes} unassigned={state.unassigned} depot={depot} highlightRouteId={highlight} />
+              <PlannerMap
+                routes={state.routes}
+                unassigned={state.unassigned}
+                depot={depot}
+                highlightRouteId={highlight}
+                highlightOrderId={hoveredOrder}
+              />
             </div>
           ) : (
             <div className="relative min-h-0 pb-2 lg:overflow-y-auto lg:pr-1">
